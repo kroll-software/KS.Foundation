@@ -9,9 +9,7 @@ namespace KS.Foundation
     /// Double Extensions
     /// </summary>
     public static class DoubleExtensions
-    {
-        #region PercentageOf calculations
-        
+    {    
 		public static bool IsDefined(this double d)
 		{
 			return !Double.IsNaN (d) && !Double.IsInfinity (d);
@@ -68,7 +66,5 @@ namespace KS.Foundation
                 result = (decimal)((decimal)position / (decimal)total * 100);
             return result;
 		}
-
-        #endregion
     }
 }

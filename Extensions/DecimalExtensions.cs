@@ -10,8 +10,6 @@ namespace KS.Foundation
     /// </summary>
     public static class DecimalExtensions
     {
-        #region PercentageOf calculations
-        
         /// <summary>
 		/// The numbers percentage
         /// </summary>
@@ -86,7 +84,5 @@ namespace KS.Foundation
                 result = (decimal)position / (decimal)total * 100;
             return result;
 		}
-
-        #endregion
     }
 }

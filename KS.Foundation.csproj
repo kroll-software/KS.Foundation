@@ -1,212 +1,23 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
-    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{F10BBD4E-1DD0-4A5B-B669-CA4F03EC6EC7}</ProjectGuid>
-    <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <TargetFramework>net8.0</TargetFramework>
+
     <RootNamespace>KS.Foundation</RootNamespace>
     <AssemblyName>KS.Foundation</AssemblyName>
-    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
-    <FileAlignment>512</FileAlignment>
-    <SolutionDir Condition="$(SolutionDir) == '' Or $(SolutionDir) == '*Undefined*'">..\</SolutionDir>
-    <RestorePackages>true</RestorePackages>
-    <UseMSBuildEngine>False</UseMSBuildEngine>
-    <AssemblyOriginatorKeyFile>KS.Foundation.snk</AssemblyOriginatorKeyFile>
-    <ReleaseVersion>0.7.6</ReleaseVersion>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
-    <DebugSymbols>true</DebugSymbols>
-    <DebugType>full</DebugType>
-    <Optimize>false</Optimize>
-    <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>DEBUG;TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
-    <DebugType>pdbonly</DebugType>
-    <Optimize>true</Optimize>
-    <OutputPath>bin\Release\</OutputPath>
-    <DefineConstants>TRACE</DefineConstants>
-    <ErrorReport>prompt</ErrorReport>
-    <WarningLevel>4</WarningLevel>
-  </PropertyGroup>
-  <PropertyGroup>
+
     <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>KS.Foundation.snk</AssemblyOriginatorKeyFile>
+
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
   </PropertyGroup>
+
   <ItemGroup>
-    <Reference Include="System" />
-    <Reference Include="System.Drawing" />
-    <Reference Include="System.Net.Http" />
-    <Reference Include="System.Runtime.Serialization" />
-    <Reference Include="System.Security" />
-    <Reference Include="System.Xml.Linq" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Xml" />
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>..\packages\Newtonsoft.Json.12.0.1\lib\net45\Newtonsoft.Json.dll</HintPath>
-    </Reference>
+    <None Include="KS.Foundation.snk" />
   </ItemGroup>
-  <ItemGroup>
-    <Compile Include="Collections\SerializableDictionary.cs" />
-    <Compile Include="DisposableObject.cs" />
-    <Compile Include="Extensions\BoolExtensions.cs" />
-    <Compile Include="Extensions\CharExtensions.cs" />
-    <Compile Include="Extensions\ClassExtensions.cs" />
-    <Compile Include="Extensions\DataSetExtensions.cs" />
-    <Compile Include="Extensions\DateTimeExtensions.cs" />
-    <Compile Include="Extensions\DecimalExtensions.cs" />
-    <Compile Include="Extensions\DoubleExtensions.cs" />
-    <Compile Include="Extensions\EventHandlerExtensions.cs" />
-    <Compile Include="Extensions\FloatExtensions.cs" />
-    <Compile Include="Extensions\KsFoundationExtensions.cs" />
-    <Compile Include="Extensions\GlobalSuppressions.cs" />
-    <Compile Include="Extensions\HashExtensions.cs" />
-    <Compile Include="Extensions\IEnumerableExtensions.cs" />
-    <Compile Include="Extensions\IListExtensions.cs" />
-    <Compile Include="Extensions\IntExtensions.cs" />
-    <Compile Include="Extensions\IServiceProviderExtensions.cs" />
-    <Compile Include="Extensions\LinqExtensions.cs" />
-    <Compile Include="Extensions\LongExtensions.cs" />
-    <Compile Include="Extensions\ObjectExtensions.cs" />
-    <Compile Include="Extensions\StringExtensions.cs" />
-    <Compile Include="Items\FoundationItem.cs" />
-    <Compile Include="Items\FoundationItemText.cs" />
-    <Compile Include="Items\FoundationItemTextProperties.cs" />
-    <Compile Include="JsonObjects.cs" />
-    <Compile Include="Messaging\MessageQueue.cs" />
-    <Compile Include="Messaging\ObservableHelpers.cs" />
-    <Compile Include="Messaging\SimpleObservable.cs" />
-    <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Stuff\DatabaseHelpers.cs" />
-    <Compile Include="Stuff\DynamicSort.cs" />
-    <Compile Include="Stuff\KSRegistry.cs" />
-    <Compile Include="Stuff\PasswordEncryptionService.cs" />
-    <Compile Include="Threading\BlockingQueue.cs" />
-    <Compile Include="Stuff\PerformanceTimer.cs" />
-    <Compile Include="Threading\PulsedWorkerThread.cs" />
-    <Compile Include="Threading\Singleton.cs" />
-    <Compile Include="State\StateMachine.cs" />
-    <Compile Include="Threading\ThreadSafeRandom.cs" />
-    <Compile Include="Threading\ConcurrencyHelpers.cs" />
-    <Compile Include="XMLObject.cs" />
-    <Compile Include="HtmlHelpers\HtmlStrings.cs" />
-    <Compile Include="HtmlHelpers\HtmlZap.cs" />
-    <Compile Include="HtmlHelpers\HttpUtility.cs" />
-    <Compile Include="HtmlHelpers\KSHttp.cs" />
-    <Compile Include="HtmlHelpers\URL.cs" />
-    <Compile Include="Stuff\Compression.cs" />
-    <Compile Include="Threading\ThreadExtensions.cs" />
-    <Compile Include="Stuff\ProcessHelpers.cs" />
-    <Compile Include="Stuff\Dos2Win.cs" />
-    <Compile Include="Stuff\QuickSelect.cs" />
-    <Compile Include="Reflection\ReflectionUtils.cs" />
-    <Compile Include="State\StackedStateMachine.cs" />
-    <Compile Include="Messaging\BlockingMessageQueue.cs" />
-    <Compile Include="Files\CSVReader.cs" />
-    <Compile Include="Files\IniFile.cs" />
-    <Compile Include="Files\LogFile.cs" />
-    <Compile Include="Files\TextFile.cs" />
-    <Compile Include="Files\FileEnumerator.cs" />
-    <Compile Include="Files\ConfigFile.cs" />
-    <Compile Include="Collections\BalancedOrderStatisticTree.cs" />
-    <Compile Include="Layout\QuadTree.cs" />
-    <Compile Include="Layout\QuadTreeNode.cs" />
-    <Compile Include="Layout\LayoutItem.cs" />
-    <Compile Include="Collections\BinarySortedList.cs" />
-    <Compile Include="Pfz\Threading\Disposers\IUpgradeableLock.cs" />
-    <Compile Include="Pfz\Threading\Disposers\OptimisticUpgradeableLock.cs" />
-    <Compile Include="Pfz\Threading\Disposers\OptimisticReadLock.cs" />
-    <Compile Include="Pfz\Threading\Disposers\OptimisticWriteLock.cs" />
-    <Compile Include="Pfz\Threading\OptimisticReaderWriterLock.cs" />
-    <Compile Include="Pfz\Threading\SpinReaderWriterLockSlim.cs" />
-    <Compile Include="Pfz\Threading\IReaderWriterLock.cs" />
-    <Compile Include="Pfz\Threading\IReaderWriterLockSlim.cs" />
-    <Compile Include="Pfz\Collections\IDisposableDictionary.cs" />
-    <Compile Include="Pfz\Collections\IPfzDictionary.cs" />
-    <Compile Include="Pfz\Collections\ThreadSafeDictionary.cs" />
-    <Compile Include="Pfz\Collections\IThreadSafeDictionary.cs" />
-    <Compile Include="Pfz\Collections\IThreadSafeAndDisposableDictionary.cs" />
-    <Compile Include="Pfz\Collections\LockedThreadSafeDictionary.cs" />
-    <Compile Include="Pfz\Collections\EmptyArray.cs" />
-    <Compile Include="Pfz\Collections\ValueConstructorDelegate.cs" />
-    <Compile Include="Pfz\Collections\_DictionaryHelper.cs" />
-    <Compile Include="Pfz\Collections\RemoveManyDictionaryDelegate.cs" />
-    <Compile Include="Pfz\Collections\DiscardUnusedValueDelegate.cs" />
-    <Compile Include="Pfz\Collections\ForEachDictionaryDelegate.cs" />
-    <Compile Include="Pfz\Collections\_ThreadSafeDictionaryNode.cs" />
-    <Compile Include="Pfz\IAdvancedDisposable.cs" />
-    <Compile Include="Stuff\FastConstructors.cs" />
-    <Compile Include="ECS\Entity.cs" />
-    <Compile Include="ECS\EntityFinder.cs" />
-    <Compile Include="ECS\SystemWrapper.cs" />
-    <Compile Include="ECS\World.cs" />
-    <Compile Include="ECS\API\IComponent.cs" />
-    <Compile Include="ECS\API\IEntity.cs" />
-    <Compile Include="ECS\API\IFinder.cs" />
-    <Compile Include="ECS\API\WorldFactory.cs" />
-    <Compile Include="Collections\FoundationBag.cs" />
-    <Compile Include="ECS\SystemManager.cs" />
-    <Compile Include="ECS\EntityManager.cs" />
-    <Compile Include="ECS\ComponentManager.cs" />
-    <Compile Include="ECS\API\IWorld.cs" />
-    <Compile Include="ECS\API\IWorldInfo.cs" />
-    <Compile Include="ECS\WorldInfo.cs" />
-    <Compile Include="ECS\BaseSystem.cs" />
-    <Compile Include="Logging\ConsoleLogger.cs" />
-    <Compile Include="Logging\EventLogger.cs" />
-    <Compile Include="Logging\FileLogger.cs" />
-    <Compile Include="Logging\BaseMessageSource.cs" />
-    <Compile Include="Logging\BaseLogger.cs" />
-    <Compile Include="Logging\LoggingApi.cs" />
-    <Compile Include="Logging\LogManager.cs" />
-    <Compile Include="JSON\JsonParser.cs" />
-    <Compile Include="JSON\JsonHelpers.cs" />
-    <Compile Include="JSON\XmlFont.cs" />
-    <Compile Include="Logging\LogMessage.cs" />
-    <Compile Include="Collections\ThreadSafeHashSet.cs" />
-    <Compile Include="Collections\ThreadsafeEnumerator.cs" />
-    <Compile Include="Threading\ObjectPool.cs" />
-    <Compile Include="Collections\CollectionTesting.cs" />
-    <Compile Include="JSON\ValueTypeObject.cs" />
-    <Compile Include="JSON\TypeResolver.cs" />
-    <Compile Include="Extensions\Strings.cs" />
-    <Compile Include="Collections\ClassicLinkedList.cs" />
-    <Compile Include="Messaging\EventMessage.cs" />
-    <Compile Include="Controller\Monohierarchy.cs" />
-    <Compile Include="Controller\Controller.cs" />
-    <Compile Include="Extensions\EnumExtensions.cs" />
+
+  <ItemGroup>    
   </ItemGroup>
-  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <Import Project="$(SolutionDir)\.nuget\NuGet.targets" Condition="Exists('$(SolutionDir)\.nuget\NuGet.targets')" />
-  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
-    <PropertyGroup>
-      <ErrorText>This project references NuGet package(s) that are missing on this computer. Enable NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
-    </PropertyGroup>
-    <!-- 
-    <Error Condition="!Exists('$(SolutionDir)\.nuget\NuGet.targets')" Text="$([System.String]::Format('$(ErrorText)', '$(SolutionDir)\.nuget\NuGet.targets'))" />
-    -->
-  </Target>
-  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
-       Other similar extension points exist, see Microsoft.Common.targets.
-  <Target Name="BeforeBuild">
-  </Target>
-  <Target Name="AfterBuild">
-  </Target>
-  -->
-  <ItemGroup>
-    <Folder Include="Reflection\" />
-    <Folder Include="Files\" />
-    <Folder Include="ECS\" />
-    <Folder Include="ECS\API\" />
-    <Folder Include="JSON\" />
-    <Folder Include="Controller\" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="packages.config" />
-    <None Include="LICENSE" />
-  </ItemGroup>
+
 </Project>

@@ -64,16 +64,54 @@ namespace KS.Foundation
 
 		public static bool NextBool()
 		{
-			return Inst().NextDouble() > 0.5;
-		}
+            //return Inst().NextDouble() > 0.5;
+            return Inst().Next(2) > 0;
+        }
+
+        /// <summary>
+        ///   Generates normally distributed numbers.
+        /// </summary>
+        /// <param name = "mean">Mean of the distribution</param>
+        /// <param name = "std">Standard deviation</param>
+        /// <returns></returns>
+        public static double NextGaussian(double mean = 0, double std = 1)
+        {
+            if (std <= 0)
+                throw new ArgumentOutOfRangeException(nameof(std), "Must be greater than zero.");
+
+            var r = Inst();
+            double u1 = r.NextDouble();
+            double u2 = r.NextDouble();
+
+            double rand_std_normal = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Sin(2.0 * Math.PI * u2);
+            double rand_normal = mean + std * rand_std_normal;
+            return rand_normal;
+        }
+
+        /// <summary>
+        ///   Generates values from a triangular distribution.
+        /// </summary>
+        /// <remarks>
+        /// See http://en.wikipedia.org/wiki/Triangular_distribution
+        /// </remarks>
+        /// <param name = "min">Minimum</param>
+        /// <param name = "max">Maximum</param>
+        /// <param name = "mode">Mode (most frequent value)</param>
+        /// <returns></returns>
+        public static double NextTriangular(double min, double max, double mode)
+        {
+            double u = Inst().NextDouble();
+            return u < (mode - min) / (max - min)
+                       ? min + Math.Sqrt(u * (max - min) * (mode - min))
+                       : max - Math.Sqrt((1 - u) * (max - min) * (max - mode));
+        }
     }
 
     internal class CryptoRandom
     {
         private const int BufferSize = 1024;  // must be a multiple of 4
         private byte[] RandomBuffer;
-        private int BufferOffset;
-        private RNGCryptoServiceProvider rng;
+        private int BufferOffset;        
 
         public CryptoRandom()
             : this(BufferSize)
@@ -85,14 +123,13 @@ namespace KS.Foundation
             if (buffersize % 4 != 0)
                 throw new ArgumentException("CryptoRandom.BufferSize must be a multiple of 4");
 
-            RandomBuffer = new byte[buffersize];
-            rng = new RNGCryptoServiceProvider();
+            RandomBuffer = new byte[buffersize];            
             BufferOffset = RandomBuffer.Length;
         }
 
         private void FillBuffer()
-        {
-            rng.GetBytes(RandomBuffer);
+        {            
+            RandomNumberGenerator.Fill(RandomBuffer);            
             BufferOffset = 0;
         }
 
@@ -135,7 +172,7 @@ namespace KS.Foundation
 
         public void GetBytes(byte[] buff)
         {
-            rng.GetBytes(buff);
+            RandomNumberGenerator.Fill(buff);
         }
     }
 }

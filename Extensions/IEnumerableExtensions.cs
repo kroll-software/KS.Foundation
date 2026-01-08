@@ -106,7 +106,6 @@ namespace KS.Foundation
             return source;
         }
 
-
 		public static IEnumerable<IEnumerable<T>> Split<T>(this IEnumerable<T> source, Predicate<T> condition)
 		{			
 			using (var enu = source.GetEnumerator())
@@ -127,5 +126,21 @@ namespace KS.Foundation
 				yield return enu.Current;
 			} while (enu.MoveNext());
 		}
+
+        public static Dictionary<TKey, List<T>> GroupedDictionary<TKey, T>(this IEnumerable<T> source, Func<T, TKey> groupBy)
+        {
+            var dict = new Dictionary<TKey, List<T>>();
+            foreach (T val in source)
+            {
+                var pred = groupBy(val);
+                if (!dict.TryGetValue(pred, out List<T> lst))
+                {
+                    lst = new List<T>();
+                    dict.Add(pred, lst);
+                };
+                lst.Add(val);
+            }
+            return dict;
+        }
     }
 }

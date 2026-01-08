@@ -120,9 +120,8 @@ namespace KS.Foundation
                 //m_Queue.Enqueue(t);
 
                 string messageKey = t.Subject;
-				LinkedListNode<T> node = null;                
-				if (Count > 0 && t.ShouldReEnqueue && m_Dict.TryGetValue(messageKey, out node))
-                {                    
+                if (Count > 0 && t.ShouldReEnqueue && m_Dict.TryGetValue(messageKey, out LinkedListNode<T> node))
+                {
                     if (node != null && node != m_Queue.Last)
                     {
                         m_Queue.Remove(node);
@@ -133,7 +132,7 @@ namespace KS.Foundation
                     }
                 }
                 else
-                {                    
+                {
                     node = m_Queue.AddLast(t);
                     if (t.ShouldReEnqueue && !m_Dict.ContainsKey(messageKey))
                         m_Dict.Add(messageKey, node);

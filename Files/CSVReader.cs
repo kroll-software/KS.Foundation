@@ -14,7 +14,7 @@ namespace KS.Foundation
 			}
 		}
 
-		public enum CSVColumnTypes
+        public enum CSVColumnTypes
 		{
 			ctUnknown = 0,
 			ctString = 1
@@ -498,8 +498,8 @@ LabelStart:
 						
 			try
 			{
-				while (File.Peek() >= 0)
-				{
+                while (File.Peek() >= 0)
+                {
 					File.Read(cc, 0, 1);
                     this.m_BytesRead++;
 
@@ -868,8 +868,8 @@ ErrExit:
 			
 			return Dos2Win.IsAscii(SB.ToString());
 		}
-		
-		
+
+
 		// --- Higer Level Functions ---
 		
 		public DataSet GetDataset(int MaxRows)
@@ -1022,6 +1022,6 @@ ErrExit:
 				if (CSV != null)
 					CSV.Close();
 			}
-		}
+		}		
     }		
 }

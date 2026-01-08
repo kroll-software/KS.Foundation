@@ -125,15 +125,7 @@ namespace KS.Foundation
 		public static string EscapeJson(this Color value)
 		{
 			return value.SerializeColor ().EscapeJson (true);
-		}
-
-		public static string EscapeJson(this Font value)
-		{
-			if (value == null)
-				return "\"\"";
-			XmlFont font = new XmlFont (value);
-			return font.ToString().EscapeJson (false);
-		}
+		}		
 			
 		public static string EscapeJson(this object value)
 		{

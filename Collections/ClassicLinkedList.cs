@@ -651,6 +651,12 @@ namespace KS.Foundation
 			}
 		}
 
+		public void AppendRange(IEnumerable<T> other)
+		{
+			foreach (var t in other)
+				this.AddLast(t);			
+		}
+
 		public int RemoveRange(int start, int len) 
 		{
 			Node previousNode = Head;

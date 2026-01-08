@@ -47,8 +47,7 @@ namespace KS.Foundation
         }
 
         // this method is automatically called during serialization
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        [SecurityPermission(SecurityAction.LinkDemand, Flags = SecurityPermissionFlag.SerializationFormatter)]
+        [EditorBrowsable(EditorBrowsableState.Advanced)]        
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);

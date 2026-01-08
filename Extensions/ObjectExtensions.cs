@@ -6,6 +6,7 @@ using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Globalization;
+using System.Text.Json;
 
 namespace KS.Foundation
 {
@@ -19,49 +20,65 @@ namespace KS.Foundation
 
         public static object CloneObject(this object obj)
         {
-            using (MemoryStream memStream = new MemoryStream())
+            // Hinweis: Diese Methode erfordert, dass alle zu klonenden Klassen [Serializable] Attribute haben oder 
+            // dass Sie JsonSerializerOptions entsprechend konfigurieren (z.B. mit DefaultIgnoreCondition)
+
+            var options = new JsonSerializerOptions
             {
-                BinaryFormatter binaryFormatter = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.Clone));
-                binaryFormatter.Serialize(memStream, obj);
-                memStream.Position = 0;
-                return binaryFormatter.Deserialize(memStream);
-            }
+                // Diese Option ist oft nützlich, wenn Sie Felder ignorieren wollen, die nicht serialisierbar sind
+                // WriteIndented = true 
+            };
+            
+            // Serialisieren zu JSON-String und dann sofort wieder deserialisieren
+            string json = JsonSerializer.Serialize(obj, obj.GetType(), options);
+            object clone = JsonSerializer.Deserialize(json, obj.GetType(), options);
+            
+            return clone;
         }
 
+
+        // ...
 
         public static bool IsBinaryEqualTo(this object obj, object obj1)
         {
             if (obj == null || obj1 == null)
             {
-                if (obj == null && obj1 == null)
-                    return true;
-                else
-                    return false;
+                return obj == null && obj1 == null;
             }
 
-            using (MemoryStream memStream = new MemoryStream())
-            {                
-                BinaryFormatter binaryFormatter = new BinaryFormatter(null, new StreamingContext(StreamingContextStates.Clone));
-                binaryFormatter.Serialize(memStream, obj);
-                byte[] b1 = memStream.ToArray();
-                memStream.SetLength(0);
+            // Stellen Sie sicher, dass die Objekte vom selben Typ sind, sonst kann der Vergleich fehlschlagen
+            if (obj.GetType() != obj1.GetType())
+            {
+                return false;
+            }
 
-                binaryFormatter.Serialize(memStream, obj1);
-                byte[] b2 = memStream.ToArray();
+            // Verwenden Sie System.Text.Json für die Serialisierung
+            // Die Reihenfolge der Properties im JSON-String ist konsistent.
+            var options = new JsonSerializerOptions
+            {
+                // Optionale Konfigurationen hier
+            };
 
-                if (b1.Length != b2.Length)
-                    return false;                
+            try
+            {
+                string json1 = JsonSerializer.Serialize(obj, obj.GetType(), options);
+                string json2 = JsonSerializer.Serialize(obj1, obj1.GetType(), options);
 
-                for (int i = 0; i < b1.Length; i++)
-                {
-                    if (b1[i] != b2[i])
-                        return false;
-                }
+                // Vergleichen Sie einfach die resultierenden JSON-Strings
+                return json1 == json2;
 
-                return true;
+            }
+            catch (JsonException)
+            {
+                // Fehler bei der Serialisierung (z.B. nicht unterstützte Typen)
+                return false;
+            }
+            catch (NotSupportedException)
+            {
+                // Fehler bei der Serialisierung
+                return false;
             }
         }
-
 
 		public static string ToInvariantString (this object value)
 		{
@@ -162,8 +179,7 @@ namespace KS.Foundation
 
                     else
                     {
-                        int retValue;
-                        if (int.TryParse(obj.ToString(), out retValue))
+                        if (int.TryParse(obj.ToString(), out int retValue))
                             return retValue;
                         else
                             return DefaultValue;
@@ -217,8 +233,7 @@ namespace KS.Foundation
 
                     else
                     {
-                        long retValue;
-                        if (long.TryParse(obj.ToString(), out retValue))
+                        if (long.TryParse(obj.ToString(), out long retValue))
                             return retValue;
                         else
                             return DefaultValue;
@@ -267,8 +282,7 @@ namespace KS.Foundation
                 return (decimal)(UInt64)obj;            
             else
             {
-                decimal retValue;
-                if (decimal.TryParse(obj.ToString(), out retValue))
+                if (decimal.TryParse(obj.ToString(), out decimal retValue))
                     return retValue;
                 else
                     return DefaultValue;
@@ -310,8 +324,7 @@ namespace KS.Foundation
                 return (double)(UInt64)obj;
             else
             {
-                double retValue;
-                if (double.TryParse(obj.ToString(), out retValue))
+                if (double.TryParse(obj.ToString(), out double retValue))
                     return retValue;
                 else
                     return DefaultValue;
@@ -355,8 +368,7 @@ namespace KS.Foundation
                         return (float)(sbyte)obj;
                     else
                     {
-                        float retValue;
-                        if (float.TryParse(obj.ToString(), out retValue))
+                        if (float.TryParse(obj.ToString(), out float retValue))
                             return retValue;
                         else
                             return DefaultValue;
@@ -382,8 +394,7 @@ namespace KS.Foundation
                 return DefaultValue;            
             else
             {
-                DateTime retValue;
-                if (DateTime.TryParse(obj.ToString(), out retValue))
+                if (DateTime.TryParse(obj.ToString(), out DateTime retValue))
                     return retValue;
                 else
                     return DefaultValue;
@@ -403,8 +414,7 @@ namespace KS.Foundation
                 return DefaultValue;
             else
             {
-                TimeSpan retValue;
-                if (TimeSpan.TryParse(obj.ToString(), out retValue))
+                if (TimeSpan.TryParse(obj.ToString(), out TimeSpan retValue))
                     return retValue;
                 else
                     return DefaultValue;
@@ -421,11 +431,10 @@ namespace KS.Foundation
 
 			string objString = obj.ToString ().Trim();
 
-			int intVal;
-			if (Int32.TryParse (objString, out intVal))
-				return intVal != 0;
-			
-			switch (objString.ToUpperInvariant())
+            if (Int32.TryParse(objString, out int intVal))
+                return intVal != 0;
+
+            switch (objString.ToUpperInvariant())
 			{
 			case "0":
 			case "F":
@@ -467,8 +476,7 @@ namespace KS.Foundation
             if (value is TimeSpan)
                 return true;
 
-            TimeSpan tmp;
-            return TimeSpan.TryParse(value.ToString(), out tmp);
+            return TimeSpan.TryParse(value.ToString(), out TimeSpan tmp);
         }
 
         public static bool IsNumeric(this object value)
@@ -479,8 +487,7 @@ namespace KS.Foundation
             if (value is int || value is double || value is float || value is decimal || value is byte || value is Int16 || value is Int64 || value is UInt16 || value is UInt32 || value is UInt64 || value is sbyte)
                 return true;
 
-            double tmp;            
-            return Double.TryParse(value.ToString(), out tmp);
+            return Double.TryParse(value.ToString(), out double tmp);
         }
     }
 }

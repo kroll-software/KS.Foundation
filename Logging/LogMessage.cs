@@ -3,9 +3,7 @@ using System.Linq;
 using System.Text;
 using System.Collections.Generic;
 using System.Diagnostics;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
 using KS.Foundation;
 
 namespace KS.Foundation
@@ -29,19 +27,21 @@ namespace KS.Foundation
 				timestamp = DateTime.UtcNow;
 			Timestamp = timestamp;
 			Args = args;
-		}			
-
-		public static LogMessage FromJson(string json)
-		{
-			if (String.IsNullOrEmpty (json))
-				return Empty;
-
-			JToken token = JToken.Parse (json);
-			if (token == null)
-				return Empty;
-
-			return FromJsonToken (token);
 		}
+
+		public static LogMessage FromJson(string json, JsonSerializerOptions options = null)
+		{
+			if (string.IsNullOrEmpty(json))
+				return Empty;
+
+			return JsonSerializer.Deserialize<LogMessage>(json, options ?? DefaultJsonOptions);
+		}
+
+		public static readonly JsonSerializerOptions DefaultJsonOptions = new JsonSerializerOptions
+		{
+			Converters = { new ObjectToInferredTypesConverter() },
+			PropertyNameCaseInsensitive = true
+		};
 
 		public string FormattedMessage
 		{
@@ -55,29 +55,6 @@ namespace KS.Foundation
 					return Text;
 				}
 			}
-		}
-
-		public static LogMessage FromJsonToken(JToken token)
-		{
-			if (token == null)
-				return Empty;
-
-			/***
-			List<object> args = new List<object> ();
-			//token.Value<JArray> ("Args").Do (arr => arr.ForEach(r => args.Add(r.ToString(Formatting.None))));
-			token.Value<JArray> ("Args").Do (arr => arr.ForEach(r => 
-				args.Add(r.Value<object>())));
-			***/
-
-			object[] args = null;
-			token.Value<JArray> ("Args").Do(a => args = a.ToString(Formatting.None).FromJson());	
-
-			return new LogMessage (
-				token.Value<string>("Level").ToEnum(LogLevels.None),
-				token.Value<string>("Text"),
-				token.Value<DateTime>("Timestamp"),
-				args != null ?  args.ToArray() : null
-			);
 		}
 			
 		public override string ToString ()

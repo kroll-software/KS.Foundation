@@ -7,7 +7,7 @@ namespace KS.Foundation
 {	
 	// Allows duplicate entries. Therefore it has "AddLeft, AddRight, .."
 	// which means: Add-in-Front, Add-at-Last..
-	// Node-Values are immutable, this tree never swaps values !
+	// Node-Values are immutable, this tree never swaps values!
 
 	public class BalancedOrderStatisticTree<T> : IEnumerable<T> where T : IComparable<T>
 	{

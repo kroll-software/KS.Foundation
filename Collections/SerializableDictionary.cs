@@ -34,18 +34,11 @@ namespace KS.Foundation
         public SerializableDictionary()
             : base()
         {
-        }
-
-        // this constructor is automatically called during deserialization
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        public SerializableDictionary(SerializationInfo info, StreamingContext context)
-            : base(info, context)
-        {                                                
-        }
+        }        
 
         // this method is automatically called during serialization
         [EditorBrowsable(EditorBrowsableState.Advanced)]
-        [SecurityPermission(SecurityAction.LinkDemand, Flags = SecurityPermissionFlag.SerializationFormatter)]
+        [Obsolete]
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);

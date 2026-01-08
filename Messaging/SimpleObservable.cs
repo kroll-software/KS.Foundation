@@ -152,8 +152,7 @@ namespace KS.Foundation
 
 			try
 			{
-				if (m_HashObservers != null)
-					m_HashObservers.Clear();
+                m_HashObservers?.Clear();
 			}
 			catch (Exception ex)
 			{
@@ -183,7 +182,7 @@ namespace KS.Foundation
 
 		protected override void CleanupUnmanagedResources()
 		{
-			base.CleanupUnmanagedResources();
+            base.CleanupUnmanagedResources();
 			Observable = null;
 			Observer = null;
 		}

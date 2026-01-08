@@ -25,15 +25,14 @@ using System.Drawing;
 using System.Xml.Serialization;
 using System.Runtime.Serialization;
 using System.Security.Permissions;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 
 namespace KS.Foundation
 {
     [DataContract]
     [Serializable]
-    [JsonObject(MemberSerialization.OptIn)]
     [TypeConverter(typeof(ExpandableObjectConverter))]
     [Browsable(false)]
     [EditorBrowsable(EditorBrowsableState.Never)]
@@ -158,7 +157,6 @@ namespace KS.Foundation
 
     [DataContract]
     [Serializable]
-    [JsonObject(MemberSerialization.OptIn)]
     [TypeConverter(typeof(ExpandableObjectConverter))]
     [XmlInclude(typeof(FoundationItemText))]
     public abstract class FoundationItemTextProperties : FoundationItemText, ICloneable, ISerializable
@@ -215,8 +213,7 @@ namespace KS.Foundation
         }
 
         // this method is automatically called during serialization
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        [SecurityPermission(SecurityAction.LinkDemand, Flags = SecurityPermissionFlag.SerializationFormatter)]
+        [EditorBrowsable(EditorBrowsableState.Advanced)]        
         public override void GetObjectData(SerializationInfo info, StreamingContext context)
         {
             base.GetObjectData(info, context);

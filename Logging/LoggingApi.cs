@@ -176,7 +176,7 @@ namespace KS.Foundation
 			Manager.Fatal (MessageTemplate, propertyValues);
         }
 
-		//[DebuggerNonUserCode]
+		[DebuggerNonUserCode]
 		public static void LogWarning(this Exception ex, string ExceptionType = "Inline")
 		{   
 			if (!CanLog(ex))
@@ -194,7 +194,7 @@ namespace KS.Foundation
 			Manager.Warning ("Error: {0}, ExceptionType: {1}, Version: {2}, Stack: {3}", ex.Message, ExceptionType, ProgramVersion, Concurrency.GetStackTrace());
 		}
 
-		//[DebuggerNonUserCode]
+		[DebuggerNonUserCode]
 		public static void LogError(this Exception ex, string ExceptionType = "Inline")
 		{   
 			if (!CanLog(ex))

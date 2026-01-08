@@ -30,7 +30,7 @@ namespace KS.Foundation
         private static readonly Lazy<T> instance = new Lazy<T>(() => new T());
 		[DebuggerNonUserCode]
         public static T Instance { get { return instance.Value; } }
-    }    
+    }
 
     /*
     Usage

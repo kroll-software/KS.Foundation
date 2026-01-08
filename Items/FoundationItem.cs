@@ -28,7 +28,8 @@ using System.Runtime.Serialization;
 using System.Security.Permissions;
 using System.Runtime.CompilerServices;  // both for new PropertyChanged Syntax
 using System.Diagnostics;
-using Newtonsoft.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace KS.Foundation
 {    
@@ -54,8 +55,7 @@ namespace KS.Foundation
     }
 
     [DataContract]
-    [Serializable]
-    [JsonObject(MemberSerialization.OptIn)]
+    [Serializable]    
     [TypeConverter(typeof(ExpandableObjectConverter))]    
     public abstract class FoundationItem : DisposableObject, IFoundationItem, IKeyedObject, IDisposable, ICloneable, ISerializable, IDataErrorInfo
     {                        
@@ -155,31 +155,27 @@ namespace KS.Foundation
         }
 
         // this method is automatically called during serialization
-        [EditorBrowsable(EditorBrowsableState.Advanced)]
-        [SecurityPermission(SecurityAction.LinkDemand, Flags = SecurityPermissionFlag.SerializationFormatter)]
+        [EditorBrowsable(EditorBrowsableState.Advanced)]        
         public virtual void GetObjectData(SerializationInfo info, StreamingContext context)
         {
-            //m_InstanceCount = baseItem_instanceCount++;
+            if (info == null)
+                throw new ArgumentNullException(nameof(info));
+
             if (context.Context != null)
                 m_Context = context.Context;
 
-            if (info == null)
-                throw new System.ArgumentNullException("info");
-
             info.AddValue("Key", m_Key);
 
-            if (context.State == StreamingContextStates.Other)
+            // Zukunftssicher: KEINE Verwendung von StreamingContextStates
+            var tag = m_Tag;
+            if (tag != null &&
+                (tag is ISerializable ||
+                Attribute.IsDefined(tag.GetType(), typeof(SerializableAttribute))))
             {
-                if (m_Tag != null && (m_Tag as ISerializable != null || (Attribute.IsDefined(m_Tag.GetType(), typeof(SerializableAttribute)))))
-                {
-                    info.AddValue("Tag", m_Tag);
-                }
-                //else
-                //{
-                //    info.AddValue("Tag", null);
-                //}
+                info.AddValue("Tag", tag);
             }
         }
+
 
         // this constructor is automatically called during deserialization
         [EditorBrowsable(EditorBrowsableState.Advanced)]
@@ -273,7 +269,7 @@ namespace KS.Foundation
         protected string m_Key = null;
         [DataMember]
         [XmlAttribute]
-        [JsonProperty]
+        [JsonInclude]
         [ReadOnly(true)]    // OK, still Xml-Serialized
         public virtual string Key
         {
