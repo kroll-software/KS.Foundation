@@ -610,7 +610,12 @@ namespace KS.Foundation
 				if (index == Left) 
 					return this;
 				if (index < Left)
+				{	
+					if (LeftChild == null) return null;
 					return LeftChild.Select(index);
+				}
+
+				if (RightChild == null) return null;
 				return RightChild.Select(index - Left - 1);
 			}
 
