@@ -95,7 +95,9 @@ namespace KS.Foundation.ECS {
         /// Methods that gets called when the system adds an entity.
         /// </summary>
         /// <param name="entity"> The entity that got added. </param>
-        protected internal virtual void EntityAdded(IEntity entity) {}
+        protected internal virtual void EntityAdded(IEntity entity) { Count++; }
+
+        public int Count { get; private set; }
 
 		protected internal virtual void RemovingEntity(IEntity entity) {}
 
@@ -103,7 +105,7 @@ namespace KS.Foundation.ECS {
         /// Method that gets called when the system removes an entity.
         /// </summary>
         /// <param name="entity">The entity that got removed.</param>
-        protected internal virtual void EntityRemoved(IEntity entity) {}
-		protected internal abstract void Clear ();
+        protected internal virtual void EntityRemoved(IEntity entity) {Count--;}
+		protected internal virtual void Clear () {Count = 0;}
     }
 }

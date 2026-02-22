@@ -709,6 +709,7 @@ namespace KS.Foundation
             };
         }
 
+        /***
         public static HashSet<T> ToHashSet<T>(this IEnumerable<T> enumerable) 
         {
             if (enumerable == null)
@@ -719,6 +720,7 @@ namespace KS.Foundation
                 hs.Add(item);
             return hs;
         }
+        ***/
 
         public static void AddDistinct<T>(this HashSet<T> hash, T item)
         {

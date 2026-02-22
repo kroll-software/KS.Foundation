@@ -235,17 +235,18 @@ namespace KS.Foundation
         public void Scan()
         {
             bCancel = false;
-            ClearFileList();
+
+			ClearFileList();
 			TotalDirsChecked = 0;
 			TotalFilesChecked = 0;
-			Count = 0;
+			Count = 0;		
 
 			if (!String.IsNullOrEmpty(DrivePath) && FileMaskArray != null)
             {
 				string[] paths = DrivePath.Split (new char[]{ ';' }, StringSplitOptions.RemoveEmptyEntries);
 				foreach (string path in paths) {
 					if (!String.IsNullOrEmpty(path))
-						FilesSearch (DrivePath);
+						FilesSearch (path);
 				}
             }
         }

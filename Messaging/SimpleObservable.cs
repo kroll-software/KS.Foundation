@@ -86,11 +86,15 @@ namespace KS.Foundation
 
 		public virtual void InvokeSendMessage(T message)
 		{
-			if (!IsDisposed && !message.IsDefault()) {
+			if (!IsDisposed && !message.IsDefault()) {				
+				/***
 				Task.Factory.StartNew (() => SendMessage (message), 
 					System.Threading.CancellationToken.None, 
 					TaskCreationOptions.PreferFairness, 
 					TaskScheduler.Default);
+				***/
+
+				Task.Run(() => SendMessage (message));
 			}
 		}
 

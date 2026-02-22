@@ -80,7 +80,7 @@ namespace KS.Foundation
 
                 m_Tag = value;
             }
-        }
+        }        
 
         //public static int baseItem_instanceCount = 0;
         //private int m_InstanceCount = 0;

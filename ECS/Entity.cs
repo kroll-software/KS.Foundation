@@ -86,7 +86,7 @@ namespace KS.Foundation.ECS
 				components [t] = component;
             	//return false;
 			else
-				components.Add(t, component);
+				components.TryAdd(t, component);				
             return true;
         }
 
