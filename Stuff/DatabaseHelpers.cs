@@ -24,35 +24,7 @@ using System.Runtime.InteropServices;
 namespace KS.Foundation
 {
 	public sealed class DatabaseHelpers
-	{		
-		private static string m_WindowsUser = "";
-		
-		public static string WindowsUser()
-		{
-            if (m_WindowsUser != "")
-			{
-                return m_WindowsUser;
-			}
-			else
-			{
-				string strUser = "";
-				string[] varaUser;
-
-				try
-				{
-					strUser = System.Security.Principal.WindowsIdentity.GetCurrent().Name;
-					varaUser = strUser.Split('\\');
-                    m_WindowsUser = varaUser[1];
-				}
-				catch
-				{
-                    m_WindowsUser = strUser.SafeString();
-				}
-
-                return m_WindowsUser;
-			}
-		}
-		
+	{								
 		public static string GetSQLServerConnectionString(string Server, string Database, bool bWinSecurity, string UserID, string Password, long ConnectionTimeout)
 		{
 			string returnValue;

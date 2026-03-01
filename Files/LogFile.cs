@@ -64,12 +64,12 @@ namespace KS.Foundation
 			catch (Exception ex)
 			{
 				if (ThrowExceptions)
-					throw ex;
+					throw;
 				else
 					ex.LogError ();
 
 				return false;
-			}				
+			}
 		}
 			
 		private int BreakCharLength;
@@ -110,7 +110,7 @@ namespace KS.Foundation
 				File = null;
 
 				if (ThrowExceptions)
-					throw ex;
+					throw;
 				else
 					ex.LogError ();
 
@@ -144,7 +144,7 @@ namespace KS.Foundation
 			catch (Exception ex)
 			{
 				if (ThrowExceptions)
-					throw ex;
+					throw;
 				else
 					ex.LogError ();
 			}
@@ -194,7 +194,7 @@ namespace KS.Foundation
 			catch (Exception ex)
 			{
 				if (ThrowExceptions)
-					throw ex;
+					throw;
 				else
 					ex.LogError ();
 			}

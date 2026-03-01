@@ -194,35 +194,46 @@ namespace KS.Foundation
         /// </summary>
         private static bool IgnoreAssembly(Assembly assembly, Predicate<string> ignoreFilter)
         {
+            if (assembly == null) return true;
+
             try
             {
-                if (assembly.GlobalAssemblyCache)
+                // 1. Ersatz für GlobalAssemblyCache (System-Assemblies)
+                // Unter .NET 8 prüfen wir auf die bekannten Microsoft/System-Präfixe.
+                string fullName = assembly.FullName;
+                if (fullName != null && (
+                    fullName.StartsWith("System.", StringComparison.OrdinalIgnoreCase) ||
+                    fullName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase) ||
+                    fullName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase) ||
+                    fullName.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase)))
                 {
-                    // Ignore system assemblies by default.
                     return true;
                 }
 
-                if (assembly.ManifestModule.Name == "<In Memory Module>" ||  // MS
-                    assembly.ManifestModule.Name == "Default Dynamic Module") // Mono
+                // 2. Dynamische Module (Ersatz für ManifestModule.Name Checks)
+                // In .NET 8 nutzt man dafür bevorzugt assembly.IsDynamic
+                if (assembly.IsDynamic)
                 {
-                    // Ignore dynamically generated assemblies.
                     return true;
                 }
 
-                if (assembly.Location.EndsWith(".vshost.exe"))
+                // 3. Location-basierte Checks (Vorsicht bei Single-File-Apps!)
+                // assembly.Location kann in .NET 8 leer sein, wenn als Single-File publiziert wurde.
+                string location = assembly.Location;
+                if (string.IsNullOrEmpty(location)) 
                 {
-                    // Ignore VS generated assemblies.
-                    return true;
+                    // Wenn keine Location da ist (In-Memory), meistens ignorieren für Reflection
+                    return true; 
                 }
 
-                // Ignore specific assemblies.
-                var assemblyName = Path.GetFileNameWithoutExtension(assembly.Location);
+                // 5. Eigene Ignore-Liste & Filter
+                var assemblyName = Path.GetFileNameWithoutExtension(location);
+                
                 if (assembliesToIgnore.Contains(assemblyName))
                 {
                     return true;
                 }
 
-                // Ignore assemblies specified by caller.
                 if (ignoreFilter != null && ignoreFilter(assemblyName))
                 {
                     return true;
@@ -231,9 +242,9 @@ namespace KS.Foundation
                 return false;
             }
             catch (Exception ex)
-            {
-                throw new ApplicationException("Failed to assess Assembly for ignoring:\n" + assembly.ManifestModule.Name, ex);
-            }            
+            {                
+                throw new Exception($"Failed to assess Assembly for ignoring: {assembly.FullName}", ex);
+            }
         }
 
         /// <summary>

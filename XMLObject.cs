@@ -52,9 +52,9 @@ namespace KS.Foundation
                 serializer = typeof(T).CreateDefaultXmlSerializer();                
                 serializer.Serialize(stream, o);                
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
             finally
             {                
@@ -76,9 +76,9 @@ namespace KS.Foundation
                 serializer = typeof(T).CreateDefaultXmlSerializer();
                 return (T)serializer.Deserialize(stream);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                throw ex;
+                throw;
             }
             finally
             {                
