@@ -40,4 +40,38 @@ namespace KS.Foundation
 				sw.LogVerbose ("Time for {0}: {1} ms", caption, sw.ElapsedMilliseconds);
 		}
 	}
+
+	public static class MemoryTest
+    {
+		public static async Task Test(Func<Task> action, int iterations)
+		{
+			GC.Collect();
+			GC.WaitForPendingFinalizers();
+			GC.Collect();
+
+			long beforeManaged = GC.GetTotalMemory(true);
+			long beforePrivate = Process.GetCurrentProcess().PrivateMemorySize64;
+
+			var sw = Stopwatch.StartNew();
+
+			for (int i = 0; i < iterations; i++)
+			{
+				await action();
+			}
+
+			sw.Stop();
+
+			GC.Collect();
+			GC.WaitForPendingFinalizers();
+			GC.Collect();
+
+			long afterManaged = GC.GetTotalMemory(true);
+			long afterPrivate = Process.GetCurrentProcess().PrivateMemorySize64;
+
+			Console.WriteLine($"Iterations: {iterations}");
+			Console.WriteLine($"Time: {sw.ElapsedMilliseconds} ms");
+			Console.WriteLine($"Managed memory delta: {(afterManaged - beforeManaged) / 1024.0 / 1024.0:F2} MB");
+			Console.WriteLine($"Private memory delta: {(afterPrivate - beforePrivate) / 1024.0 / 1024.0:F2} MB");
+		}
+	}
 }
