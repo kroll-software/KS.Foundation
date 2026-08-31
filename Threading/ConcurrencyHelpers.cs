@@ -30,58 +30,33 @@ namespace KS.Foundation
 {
     public static class Concurrency
     {
-        //public static void LockFreeUpdate(ref object field, object newField)
-        //{
-        //    var spinWait = new SpinWait();
-        //    while (true)
-        //    {
-        //        object snapshot1 = field;
-        //        object snapshot2 = Interlocked.CompareExchange(ref field, newField, snapshot1);
-        //        if (snapshot1 == snapshot2) return;
-        //        spinWait.SpinOnce();
-        //    }
-        //}
-
-        //public static void WaitWithPumping(this Task task)
-        //{
-        //    if (task == null) throw new ArgumentNullException("task");
-        //    var nestedFrame = new DispatcherFrame();
-        //    task.ContinueWith(_ => nestedFrame.Continue = false);
-        //    Dispatcher.PushFrame(nestedFrame);
-        //    task.Wait();
-        //}
-
-		public static void WaitSpinning (int n) 
-		{
-			var spinWait = new SpinWait();
-			for (int i = 0; i < n; i++)
-				spinWait.SpinOnce ();
-		}			
-
-		public static void LockFreeUpdate(ref int field, int newField)
-		{
-			var spinWait = new SpinWait();
-			while (true)
-			{
-				int snapshot1 = field;
-				int snapshot2 = Interlocked.CompareExchange(ref field, newField, snapshot1);
-				if (snapshot1 == snapshot2) return;
-				spinWait.SpinOnce();
-			}
-		}			
-
-        public static void LockFreeUpdate<T>(ref T field, T newField) where T : class
+        public static void WaitSpinning(int n)
         {
             var spinWait = new SpinWait();
-            while (true)
-            {
-                T snapshot1 = field;
-                T snapshot2 = Interlocked.CompareExchange(ref field, newField, snapshot1);
-                if (snapshot1 == snapshot2) return;
+            for (int i = 0; i < n; i++)
                 spinWait.SpinOnce();
-            }
         }
 
+        /// <summary>
+        /// Tauscht ein Int-Feld atomar gegen einen festen Wert aus.
+        /// </summary>
+        public static void LockFreeUpdate(ref int field, int newField)
+        {
+            Interlocked.Exchange(ref field, newField);
+        }
+
+        /// <summary>
+        /// Tauscht ein Referenz-Feld atomar gegen einen festen Wert aus.
+        /// </summary>
+        public static void LockFreeUpdate<T>(ref T field, T newField) where T : class
+        {
+            Interlocked.Exchange(ref field, newField);
+        }
+
+        /// <summary>
+        /// Berechnet atomar einen neuen Wert basierend auf dem aktuellen Feldzustand (CAS-Loop).
+        /// WICHTIG: updateFunction muss frei von Seiteneffekten sein!
+        /// </summary>
         public static void LockFreeUpdate<T>(ref T field, Func<T, T> updateFunction) where T : class
         {
             var spinWait = new SpinWait();
@@ -92,30 +67,42 @@ namespace KS.Foundation
                 T snapshot2 = Interlocked.CompareExchange(ref field, calc, snapshot1);
                 if (snapshot1 == snapshot2) return;
                 spinWait.SpinOnce();
-
-                //System.Diagnostics.Debug.WriteLine("LockFreeUpdate => Spin()");
             }
         }
 
+        /// <summary>
+        /// Erzeugt einen StackTrace für Exception-Logs (lädt PDB-Zeilennummern, falls vorhanden).
+        /// </summary>
         public static string GetStackTrace()
         {
-            StackTrace stackTrace = new StackTrace();           // get call stack
-            StackFrame[] stackFrames = stackTrace.GetFrames();  // get method calls (frames)
+            // true aktiviert PDB-Zeilennummern und Dateinamen für Debug-Builds
+            StackTrace stackTrace = new StackTrace(true);
+            StackFrame[] stackFrames = stackTrace.GetFrames();
+
+            if (stackFrames == null)
+                return string.Empty;
 
             StringBuilder sb = new StringBuilder();
-            //sb.AppendLine("");
-
-            // write call stack method names
             foreach (StackFrame stackFrame in stackFrames)
             {
-				// unfortunately no file/line information is available here,
-				// even when PDB-files are present.
-                sb.AppendLine(stackFrame.GetMethod().Name);
-				//sb.AppendLine(stackFrame.ToString());
-                //Console.WriteLine(stackFrame.GetMethod().Name);   // write method name
+                var method = stackFrame.GetMethod();
+                if (method != null)
+                {
+                    string fileName = stackFrame.GetFileName();
+                    int lineNumber = stackFrame.GetFileLineNumber();
+
+                    if (!string.IsNullOrEmpty(fileName) && lineNumber > 0)
+                    {
+                        sb.AppendLine($"{method.DeclaringType?.Name}.{method.Name} in {fileName}:line {lineNumber}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{method.DeclaringType?.Name}.{method.Name}");
+                    }
+                }
             }
 
             return sb.ToString();
-        }			
-    }    
+        }
+    }
 }

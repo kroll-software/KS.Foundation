@@ -12,7 +12,7 @@ namespace KS.Foundation
 	/// <summary>
 	/// A classic linked list.
 	/// </summary>
-	public class ClassicLinkedList<T> : IEnumerable<T> where T : IComparable<T>
+	public class ClassicLinkedList<T> : IEnumerable<T>
 	{			
 		public object SyncObject { get; private set; }
 		public IComparer<T> Comparer { get; protected set ; }			
@@ -30,7 +30,7 @@ namespace KS.Foundation
 
 		public sealed class Node : IEnumerable<T>
 		{						
-			Node m_Next;
+			internal Node m_Next;
 			public Node Next
 			{
 				get {					
@@ -38,7 +38,8 @@ namespace KS.Foundation
 				}
 				set {					
 					System.Diagnostics.Debug.Assert (value != this);
-					Concurrency.LockFreeUpdate (ref m_Next, value);
+					//Concurrency.LockFreeUpdate (ref m_Next, value);
+					m_Next = value; // Direct, atomic reference write
 				}
 			}
 
@@ -56,13 +57,7 @@ namespace KS.Foundation
 				Value = value;
 				m_Next = next;
 			}				
-
-			~Node()
-			{
-  				// not sure, but I think, this might help the GC
-				m_Next = null;
-			}
-
+			
 			public Node Clone()
 			{
 				return new Node (Value, Next);
@@ -90,7 +85,12 @@ namespace KS.Foundation
 			}
 		}
 
-		public int Count { get; protected set; }
+		protected int m_Count;
+		public int Count 
+		{ 
+			get => m_Count; 
+			protected set => m_Count = value; 
+		}
 
 		private Node m_Head;
 		public Node Head 
@@ -244,20 +244,36 @@ namespace KS.Foundation
 		/// <returns>The previous node</returns>
 		/// <param name="value">Value.</param>
 		public Node FindPrev(T value)
-		{			
+		{           
 			if (Head == null)
 				return null;
-			CheckComparer ();
-			CheckCurrent ();
-			// fast return for the typical case where we add sorted values
-			if (Comparer.Compare(value, Current.Value) >= 0)
-				return Current;
+
+			CheckComparer();
+			CheckCurrent();
+
+			// Lokalen Schnappschuss von Current ziehen!
+			Node currentSnapshot = Current;
+
+			// Fast return: Nur vergleichen, wenn currentSnapshot NICHT null ist
+			if (currentSnapshot != null && Comparer.Compare(value, currentSnapshot.Value) >= 0)
+				return currentSnapshot;
+
 			Node p = Head;
 			Node prev = null;
-			while (p != null && Comparer.Compare (p.Value, value) <= 0) {
+
+			while (p != null)
+			{
+				// Wert vor dem Vergleich sichern
+				T pVal = p.Value;
+				if (Comparer.Compare(pVal, value) > 0)
+				{
+					break;
+				}
+
 				prev = p;
-				p = p.Next;
+				p = p.Next; // Wandern zum nächsten Knoten
 			}
+
 			return prev;
 		}
 
@@ -284,121 +300,163 @@ namespace KS.Foundation
 		// *** Adding Items ***
 
 		public void AddFirst(T value)
-		{				
-			Node node = new Node(value);
-			node.Next = Head;
-			Concurrency.LockFreeUpdate (ref m_Head, node);
-			if (Current == null)
-				Current = node;
-			Count++;
-			OnInsert (value);
+		{
+			lock (SyncObject)
+			{
+				// Einfache, direkte Zeiger-Zuweisung – das Lock garantiert die Exklusivität unter Writern
+				Head = new Node(value, Head);
+
+				if (Current == null)
+					Current = Head;
+
+				Interlocked.Increment(ref m_Count);
+				
+				// Exakt in der Reihenfolge des Einfügens feuern
+				OnInsert(value);
+			}
 		}
 
 		public void AddLast(T value)
-		{	
-			if (Head == null || Count == 0) 
-			{				
-				Head = new Node(value);
-				Current = Head;
-				Count = 1;
-			} 
-			else 
-			{				
-				CheckCurrent ();
-				Node prev = Current;
-				Current = new Node (value);
-				prev.Next = Current;
-				Count++;
+		{
+			lock (SyncObject)
+			{
+				Node newNode = new Node(value);
+
+				if (Head == null)
+				{
+					Head = newNode;
+					Current = newNode;
+					m_Count = 1;
+				}
+				else
+				{
+					// Wenn Current nicht am Ende steht, einmal schnell ans Ende springen
+					if (Current == null || Current.Next != null)
+					{
+						CheckCurrent();
+					}
+
+					// O(1) Anfügen direkt über Current/Tail!
+					Current.Next = newNode;
+					Current = newNode;
+					Interlocked.Increment(ref m_Count);
+				}
+
+				OnInsert(value);
 			}
-			OnInsert (value);
 		}
 
 		public void InsertAt(int index, T value)
 		{
-			if (Head == null || Count == 0 || index >= Count)
-				AddLast (value);
-			else if (index == 0)
-				AddFirst (value);
-			else 
+			lock (SyncObject)
 			{
-				Node prev = Head;
-				int i = 0;
-				while (prev.Next != null && i++ < index - 1)
-					prev = prev.Next;
+				if (Head == null || index <= 0)
+				{
+					AddFirst(value);
+					return;
+				}
 
+				if (index >= Count)
+				{
+					AddLast(value);
+					return;
+				}
+
+				// Ziel-Vorgänger (index - 1) ansteuern
+				Node prev = Head;
+				for (int i = 0; i < index - 1; i++)
+				{
+					if (prev.Next == null)
+						break;
+					prev = prev.Next;
+				}
+
+				// Erst den Nachfolger im neuen Knoten verknüpfen, dann den Vorgänger umhängen
 				Node next = prev.Next;
-				Node curr = new Node (value);
+				Node curr = new Node(value, next); 
 				prev.Next = curr;
-				curr.Next = next;
+
 				if (prev == Current)
-					Current = next;
-				Count++;
-				OnInsert (value);
+					Current = curr;
+
+				Interlocked.Increment(ref m_Count);
+				OnInsert(value);
 			}
 		}
 
 		public bool InsertItem(T prevValue, T value)
 		{
-			Node prev = Search (prevValue);
-			if (prev == null)
-				return false;
-			Node next = prev.Next;
-			Node curr = new Node (value);
-			prev.Next = curr;
-			curr.Next = next;
-			if (prev == Current)
-				Current = next;
-			Count++;
-			OnInsert (value);
-			return true;
+			lock (SyncObject)
+			{
+				Node prev = Search(prevValue);
+				if (prev == null)
+					return false;
+
+				Node next = prev.Next;
+				Node curr = new Node(value, next); // Vollständig initialisiert
+				prev.Next = curr;
+
+				if (prev == Current)
+					Current = curr;
+
+				Interlocked.Increment(ref m_Count);
+				OnInsert(value);
+				return true;
+			}
 		}
 
 		public void InsertBefore(Node curr, T value)
 		{
-			if (curr == null) {
-				AddLast (value);	// it never happens
-			}
-			else if (curr == Head) 
+			lock (SyncObject)
 			{
-				AddFirst (value);
-			}
-			else 
-			{
-				//Insert (curr, value);
+				if (curr == null)
+				{
+					AddLast(value);
+				}
+				else if (curr == Head)
+				{
+					AddFirst(value);
+				}
+				else
+				{
+					Node prev = Head;
+					while (prev.Next != null && prev.Next != curr)
+						prev = prev.Next;
 
-				Node prev = Head;
-				while (prev.Next != null && prev.Next != curr)
-					prev = prev.Next;
+					Node next = prev.Next;
+					Node newNode = new Node(value, next); // Vollständig initialisiert
+					prev.Next = newNode;
 
-				Node next = prev.Next;
-				curr = new Node (value);
-				prev.Next = curr;
-				curr.Next = next;
-				if (prev == Current)
-					Current = next ?? curr;
-				Count++;
-				OnInsert (value);
-				/*** ***/
+					if (prev == Current)
+						Current = newNode;
+
+					Interlocked.Increment(ref m_Count);
+					OnInsert(value);
+				}
 			}
 		}
 
 		public void InsertAfter(Node prev, T value)
 		{
-			if (prev == null) 
+			lock (SyncObject)
 			{
-				AddLast (value);
-				return;
-			}
+				if (prev == null)
+				{
+					AddLast(value);
+					return;
+				}
 
-			Node next = prev.Next;
-			Node curr = new Node (value);
-			prev.Next = curr;
-			curr.Next = next;
-			if (prev == Current)
-				Current = next ?? curr;
-			Count++;
-			OnInsert (value);
-		}			
+				Node next = prev.Next;
+				Node curr = new Node(value, next); // Vollständig initialisiert
+				prev.Next = curr;
+
+				if (prev == Current)
+					Current = curr;
+
+				Interlocked.Increment(ref m_Count);
+				OnInsert(value);
+			}
+		}
 
 
 
@@ -411,48 +469,54 @@ namespace KS.Foundation
 		/// <param name="allowDupes">If set to <c>true</c> allow dupes.</param>
 		public bool AddSorted(T value, bool allowDupes)
 		{   
-			if (value == null) {
-				return false;
-			}
-			if (Head == null) {
-				AddLast (value);
-				return true;
-			} 
+			lock (SyncObject)
+    		{
+				if (value == null) {
+					return false;
+				}
+				if (Head == null) {
+					AddLast (value);
+					return true;
+				} 
 
-			CheckComparer ();
+				CheckComparer ();
 
-			Node prev = FindPrev (value);
-			if (prev == null) {
-				AddFirst (value);
-				return true;
-			}
-			if (prev.Next == null) {
-				AddLast (value);
-				return true;
-			} 
-			if (Comparer.Compare (prev.Next.Value, value) == 0) {
-				if (allowDupes) {
-					while (prev.Next != null && Comparer.Compare (prev.Next.Value, value) == 0)
-						prev = prev.Next;
-					InsertAfter (prev, value);
+				Node prev = FindPrev (value);
+				if (prev == null) {
+					AddFirst (value);
 					return true;
 				}
-				return false;
-			} 
-				
-			InsertAfter (prev, value);
-			return true;
+				if (prev.Next == null) {
+					AddLast (value);
+					return true;
+				} 
+				if (Comparer.Compare (prev.Next.Value, value) == 0) {
+					if (allowDupes) {
+						while (prev.Next != null && Comparer.Compare (prev.Next.Value, value) == 0)
+							prev = prev.Next;
+						InsertAfter (prev, value);
+						return true;
+					}
+					return false;
+				}
+					
+				InsertAfter (prev, value);
+				return true;
+			}
 		}
 			
 		public void AddOrUpdate(T value)
 		{	
-			Node node = FindPrev (value);
-			if (node == null) {
-				AddFirst (value);
-			} else if (Comparer.Compare (node.Value, value) == 0) {
-				node.Value = value;
-			} else {
-				InsertAfter (node, value);
+			lock (SyncObject)
+    		{
+				Node node = FindPrev (value);
+				if (node == null) {
+					AddFirst (value);
+				} else if (Comparer.Compare (node.Value, value) == 0) {
+					node.Value = value;
+				} else {
+					InsertAfter (node, value);
+				}
 			}
 		}			
 
@@ -463,153 +527,227 @@ namespace KS.Foundation
 		}
 
 
-		/* Function to swap Nodes x and y in linked list by changing links */
+		/* Function to swap Nodes containing values x and y in linked list by changing links */
 		public void SwapValues(T x, T y)
 		{
-			CheckComparer ();	
+			CheckComparer();
 
 			// Nothing to do if x and y are same
-			int cmp = Comparer.Compare(x, y);
-			if (cmp == 0) return;
-
-			// Search for x (keep track of prevX and CurrX)
-			Node prevX = null, currX = Head;
-			while (currX != null && Comparer.Compare(currX.Value, x) != 0)
-			{
-				prevX = currX;
-				currX = currX.Next;
-			}
-
-			// Search for y (keep track of prevY and currY)
-			Node prevY = null, currY = Head;
-			while (currY != null && Comparer.Compare(currY.Value, y) != 0)
-			{
-				prevY = currY;
-				currY = currY.Next;
-			}
-
-			// If either x or y is not present, nothing to do
-			if (currX == null || currY == null)
+			if (x == null || y == null || Comparer.Compare(x, y) == 0)
 				return;
 
-			// If x is not head of linked list
-			if (prevX != null)
-				prevX.Next = currY;
-			else //make y the new head				
-				Head = currY;
+			lock (SyncObject)
+			{
+				if (Head == null)
+					return;
 
-			// If y is not head of linked list
-			if (prevY != null)
-				prevY.Next = currX;
-			else // make x the new head
-				Head = currX;
+				// Search for x (keep track of prevX and currX)
+				Node prevX = null, currX = Head;
+				while (currX != null && Comparer.Compare(currX.Value, x) != 0)
+				{
+					prevX = currX;
+					currX = currX.Next;
+				}
 
-			// Swap next pointers
-			Node temp = currX.Next;
-			currX.Next = currY.Next;
-			currY.Next = temp;
+				// Search for y (keep track of prevY and currY)
+				Node prevY = null, currY = Head;
+				while (currY != null && Comparer.Compare(currY.Value, y) != 0)
+				{
+					prevY = currY;
+					currY = currY.Next;
+				}
+
+				// If either x or y is not present, nothing to do
+				if (currX == null || currY == null)
+					return;
+
+				// Special Case: x and y are the exact same node instance
+				if (currX == currY)
+					return;
+
+				// Spezialfall: Direkt benachbarte Knoten!
+				// (Wichtig, damit prevY.Next = currX keine Selbst-Referenz erzeugt)
+				if (currX.Next == currY)
+				{
+					// currX steht DIREKT VOR currY
+					currX.Next = currY.Next;
+					currY.Next = currX;
+
+					if (prevX != null)
+						prevX.Next = currY;
+					else
+						Head = currY;
+				}
+				else if (currY.Next == currX)
+				{
+					// currY steht DIREKT VOR currX
+					currY.Next = currX.Next;
+					currX.Next = currY;
+
+					if (prevY != null)
+						prevY.Next = currX;
+					else
+						Head = currX;
+				}
+				else
+				{
+					// Standardfall: Knoten liegen weiter auseinander
+					Node tempNext = currX.Next;
+					currX.Next = currY.Next;
+					currY.Next = tempNext;
+
+					if (prevX != null)
+						prevX.Next = currY;
+					else
+						Head = currY;
+
+					if (prevY != null)
+						prevY.Next = currX;
+					else
+						Head = currX;
+				}
+			}
 		}
 
 		// *** Removing Items ***
 
 		public bool Remove(T value)
 		{
-			if (value == null || Head == null)
+			lock (SyncObject)
+    		{
+				if (value == null || Head == null)
+					return false;
+
+				// Spezialfall: Head enthält den gesuchten Wert
+				if (Head.Value != null && Head.Value.Equals(value))
+				{
+					RemoveFirst();
+					return true;
+				}
+
+				Node curr = Head;
+
+				// Suche den Vorgänger des zu löschenden Knotens
+				while (curr.Next != null && (curr.Next.Value == null || !curr.Next.Value.Equals(value)))
+				{
+					curr = curr.Next;
+				}
+
+				// Knoten gefunden
+				if (curr.Next != null)
+				{
+					Node prev = curr;
+					Node target = curr.Next;
+
+					// Atomarer Switch: Vorgänger überspringt den Zielknoten
+					prev.Next = target.Next;
+
+					// Falls der gelöschte Knoten das Ende der Liste war (oder Current)
+					if (target == Current || prev.Next == null)
+						Current = prev;
+
+					Interlocked.Decrement(ref m_Count);
+					OnRemove(value);
+					return true;
+				}
+
 				return false;
-
-			Node curr = Head;
-			if (curr.Value.Equals (value)) 
-			{				
-				Head = curr.Next;
-				Count--;
-				OnRemove (value);
-				return true;
 			}
-
-			while (curr.Next != null && !value.Equals (curr.Next.Value)) 
-				curr = curr.Next;
-
-			if (curr.Next != null) 
-			{
-				Node prev = curr;
-				curr = curr.Next;
-				prev.Next = curr.Next;
-				// delete current
-				if (curr == Current)
-					Current = prev;
-				Count--;
-				OnRemove (value);
-				return true;
-			}
-
-			return false;
 		}
 
 		public T RemoveLast()
-		{			
-			return RemoveAt (Count - 1);
+		{
+			lock (SyncObject)
+			{
+				if (Head == null)
+					return default;
+
+				// Fall 1: Nur ein einziges Element in der Liste -> O(1)
+				if (Head.Next == null)
+				{
+					T val = Head.Value;
+					Head = null;
+					Current = null;
+					Interlocked.Exchange(ref m_Count, 0);
+					OnRemove(val);
+					return val;
+				}
+
+				// Fall 2: Mehrere Elemente -> Vorletzten Knoten finden
+				Node prev = Head;
+				while (prev.Next != null && prev.Next.Next != null)
+				{
+					prev = prev.Next;
+				}
+
+				// 'prev.Next' ist der zu löschende letzte Knoten
+				Node lastNode = prev.Next;
+				T lastValue = lastNode.Value;
+
+				// Letzten Knoten abkoppeln
+				prev.Next = null;
+				Current = prev;
+
+				Interlocked.Decrement(ref m_Count);
+				OnRemove(lastValue);
+
+				return lastValue;
+			}
 		}
+
+		// *** Thread-Safe Removing Items ***
 
 		public void Remove(Node node)
 		{
-			// Current ist danach Prev.
+			lock (SyncObject)
+    		{
+				if (node == null || Head == null)
+					return;
 
-			if (node == null || Head == null)
-				return;
-			if (node == Head) {
-				RemoveFirst ();
-				return;
-			}
-
-			Node curr = Head; 
-			Node prev = curr;
-
-			while (curr != null)
-			{
-				if (curr == node) {
-					prev.Next = curr.Next;
-					if (prev.Next == null)
-						Current = prev;
-					Count--;
-					OnRemove (node.Value);
+				if (node == Head)
+				{
+					RemoveFirst();
 					return;
 				}
 
-				prev = curr;
-				curr = curr.Next;
-			}
-		}
+				Node curr = Head;
+				Node prev = curr;
 
-		public T RemoveFirst()
-		{
-			if (Head == null)
-				return default(T);
+				while (curr != null)
+				{
+					if (curr == node)
+					{
+						// Atomarer Switch: Vorgänger zeigt sofort auf den Nachfolger
+						prev.Next = curr.Next;
 
-			T val = Head.Value;
-			if (Head.Next == null)
-				Clear ();
-			else 
-			{
-				Head = Head.Next;
-				Count--;
+						// Falls der gelöschte Knoten das Listenende war, Current anpassen
+						if (curr == Current || prev.Next == null)
+							Current = prev;
+
+						Interlocked.Decrement(ref m_Count);
+						OnRemove(node.Value);
+						return;
+					}
+
+					prev = curr;
+					curr = curr.Next;
+				}
 			}
-			OnRemove (val);
-			return val;
 		}
 
 		public T RemoveAt(int index)
 		{
-			if (Head == null)
-				return default(T);
+			lock (SyncObject)
+    		{
+				if (Head == null || index < 0)
+					return default(T);
 
-			if (index == 0)
-			{
-				return RemoveFirst ();
-			}
+				if (index == 0)
+				{
+					return RemoveFirst();
+				}
 
-			if (index >= 0 && index < Count)
-			{
-				Node curr = Head; 
+				Node curr = Head;
 				Node prev = curr;
 				int count = 0;
 
@@ -617,77 +755,174 @@ namespace KS.Foundation
 				{
 					if (count == index)
 					{
+						T val = curr.Value;
+
+						// Atomarer Switch: Vorgänger überspringt curr
 						prev.Next = curr.Next;
-						Count--;
-						//if (curr == Current)
-						if (index == Count)
+
+						// Falls der gelöschte Knoten am Ende stand, Current auf prev zurücksetzen
+						if (curr == Current || prev.Next == null)
 							Current = prev;
-						OnRemove (curr.Value);
-						return curr.Value;
+
+						Interlocked.Decrement(ref m_Count);
+						OnRemove(val);
+						return val;
 					}
 
-					count++; 
+					count++;
 					prev = curr;
 					curr = curr.Next;
 				}
+
+				return default(T);
 			}
+		}
 
-			return default(T);
-		}			
+		public T RemoveFirst()
+		{
+			lock (SyncObject)
+    		{
+				if (Head == null)
+					return default(T);
 
+				Node oldHead = Head;
+				T val = oldHead.Value;
+
+				if (oldHead.Next == null)
+				{
+					Clear();
+				}
+				else
+				{
+					// Atomar den Head auf das nächste Element verschieben
+					Head = oldHead.Next;
+					Interlocked.Decrement(ref m_Count);
+				}
+
+				OnRemove(val);
+				return val;
+			}
+		}
 
 		public void RemoveSortedRange(T low, T high) 
 		{
-			Node previousNode = Head;
-			Node deleteNode = previousNode.GetNext();
-			while (deleteNode != null) {
-				if (deleteNode.Value.CompareTo(low) >= 0 && deleteNode.Value.CompareTo(high) <= 0) {
-					previousNode.SetNext(deleteNode.GetNext());
-					Count--;
-				} else {
-					previousNode = previousNode.GetNext();
+			lock (SyncObject)
+			{
+				if (Head == null)
+					return;
+
+				CheckComparer();
+
+				// 1. Erst den Head bereinigen, falls er im Bereich liegt
+				while (Head != null && Comparer.Compare(Head.Value, low) >= 0 && Comparer.Compare(Head.Value, high) <= 0)
+				{
+					Head = Head.Next;
+					Interlocked.Decrement(ref m_Count);
+					OnRemove(Head != null ? Head.Value : default);
 				}
-				deleteNode = deleteNode.GetNext();
+
+				if (Head == null)
+				{
+					Current = null;
+					return;
+				}
+
+				// 2. Restliche Knoten filtern
+				Node previousNode = Head;
+				Node deleteNode = Head.Next;
+
+				while (deleteNode != null) 
+				{
+					if (Comparer.Compare(deleteNode.Value, low) >= 0 && Comparer.Compare(deleteNode.Value, high) <= 0) 
+					{
+						previousNode.Next = deleteNode.Next;
+						Interlocked.Decrement(ref m_Count);
+						OnRemove(deleteNode.Value);
+					} 
+					else 
+					{
+						previousNode = deleteNode;
+					}
+					deleteNode = deleteNode.Next;
+				}
+
+				CheckCurrent(true);
 			}
 		}
 
 		public void AppendRange(IEnumerable<T> other)
 		{
-			foreach (var t in other)
-				this.AddLast(t);			
+			if (other == null)
+				return;
+
+			lock (SyncObject)
+			{
+				foreach (var t in other)
+					AddLast(t);            
+			}
 		}
 
 		public int RemoveRange(int start, int len) 
 		{
-			Node previousNode = Head;
-			Node deleteNode = previousNode.GetNext();
-			int i = 0;
-			int k = 0;
-			if (start == 0)
-				k++;
-			while (deleteNode != null && k < len) {				
-				if (i >= start - 1) {
-					previousNode.SetNext(deleteNode.GetNext());
-					//Count--;
-					k++;
-				} else {
-					previousNode = previousNode.GetNext();
-					i++;
+			if (len <= 0)
+				return 0;
+
+			lock (SyncObject)
+			{
+				if (Head == null || start >= Count)
+					return 0;
+
+				// Fall 1: Löschen beginnt direkt beim Head (start == 0)
+				if (start == 0)
+				{
+					int removed = 0;
+					while (Head != null && removed < len)
+					{
+						T removedVal = Head.Value;
+						Head = Head.Next;
+						Interlocked.Decrement(ref m_Count);
+						OnRemove(removedVal);
+						removed++;
+					}
+					CheckCurrent(true);
+					return removed;
 				}
-				deleteNode = deleteNode.GetNext();
+
+				// Fall 2: Löschen beginnt ab der Mitte/später
+				Node prev = Head;
+				for (int idx = 0; idx < start - 1 && prev.Next != null; idx++)
+				{
+					prev = prev.Next;
+				}
+
+				Node curr = prev.Next;
+				int countRemoved = 0;
+
+				while (curr != null && countRemoved < len)
+				{
+					T removedVal = curr.Value;
+					curr = curr.Next;
+					countRemoved++;
+					Interlocked.Decrement(ref m_Count);
+					OnRemove(removedVal);
+				}
+
+				// Ausgeklinkten Teil überspringen
+				prev.Next = curr;
+
+				CheckCurrent(true);
+				return countRemoved;
 			}
-			if (start == 0)
-				Head = deleteNode;
-			Count -= k;
-			CheckCurrent (true);
-			return k;
 		}
 			
 		public void Clear()
 		{
-			Head = null;
-			Current = null;
-			Count = 0;
+			lock (SyncObject)
+			{
+				Head = null;				
+				Current = null;
+				Interlocked.Exchange(ref m_Count, 0);
+			}
 		}
 
 		public void ClearAndDisposeItems()
@@ -705,29 +940,58 @@ namespace KS.Foundation
 
 		public void ResetCurrent()
 		{
-			Node curr = Head;
-			int count = 1;
-			if (curr != null) 
+			lock (SyncObject)
 			{
-				while (curr.Next != null) {
-					curr = curr.Next;
-					count++;
+				Node curr = Head;
+				int count = 0;
+
+				if (curr != null)
+				{
+					count = 1;
+					while (curr.Next != null)
+					{
+						curr = curr.Next;
+						count++;
+					}
 				}
+
+				Current = curr;
+				Interlocked.Exchange(ref m_Count, count);
 			}
-			Current = curr;
-			Count = count;
 		}
 
 		public void CheckCurrent(bool reset = false)
 		{
-			if (Head == null) {
+			// 1. Lokalen Schnappschuss von Head sichern
+			Node head = Head;
+			if (head is null) 
+			{
 				Current = null;
-			} else {
-				if (Current == null || reset)
-					Current = Head;
-				while (Current.Next != null)
-					Current = Current.Next;
+				return;
 			}
+
+			// 2. Lokalen Schnappschuss von Current sichern
+			Node curr = reset ? head : Current;
+			if (curr is null)
+			{
+				curr = head;
+			}
+
+			// 3. Lokale Schleife über den lokalisierten Zeiger
+			while (curr is not null)
+			{
+				Node nextNode = curr.Next;
+				if (nextNode is null)
+				{
+					// Am Ende der Kette angekommen
+					Current = curr;
+					return;
+				}
+
+				curr = nextNode;
+			}
+
+			Current = null;
 		}
 
 
@@ -760,49 +1024,63 @@ namespace KS.Foundation
 
 		public void Sort(IComparer<T> comparer)
 		{
-			if (comparer != Comparer) 
+			lock (SyncObject)
 			{
-				Comparer = comparer;
-				Sort ();
+				if (comparer != Comparer) 
+				{
+					Comparer = comparer;
+				}
+				Sort();
 			}
 		}
 
 		public void Sort()
 		{
-			if (Count == 0)
-				return;
+			lock (SyncObject)
+			{
+				if (Head == null || Head.Next == null)
+					return;
 
-			if (Comparer == null)
-				Comparer = Comparer<T>.Default;
+				if (Comparer == null)
+					Comparer = Comparer<T>.Default;
 
-			Head = MergeSort(Head);
-			Current = null;
+				// MergeSort baut die neue Kette auf. 
+				// Erst wenn ALLES komplett sortiert ist, setzen wir Head in einem atomaren Schritt um!
+				Node sortedHead = MergeSort(Head);
+
+				// Atomares Zuweisen an die Instanz
+				Head = sortedHead;
+
+				// Current ans Ende der neuen Kette setzen
+				CheckCurrent(reset: true);
+			}
 		}
 
 		// MergeSort Linked List
 		//The main function
-		public Node MergeSort(Node head) 
+		private Node MergeSort(Node head) 
 		{
 			if (head == null || head.Next == null) 
 				return head;
 
-			Node middle = GetMiddle(head);      //get the middle of the list
+			Node middle = GetMiddle(head);      // Mitte finden
 			Node sHalf = middle.Next; 
-			middle.Next = null;   				//split the list into two halfs
-			return Merge(MergeSort(head), MergeSort(sHalf));  //recurse on that
+			middle.Next = null;                 // In zwei Teillisten spalten
+
+			// Rekursiv sortieren und zusammenfügen
+			return Merge(MergeSort(head), MergeSort(sHalf));  
 		}
 
 		//Merge subroutine to merge two sorted lists
-		public Node Merge(Node a, Node b) 
+		private Node Merge(Node a, Node b) 
 		{
-			Node dummyHead, curr; 
-			dummyHead = new Node(); 
-			curr = dummyHead;
+			// Dummy-Pointer ohne Neuinstanziierung von 'Node'
+			Node dummyHead = new Node(default); 
+			Node curr = dummyHead;
 			IComparer<T> comparer = Comparer;
 
-			while ( a != null && b != null ) 
-			{				
-				//if ( a.Value <= b.Value) 
+			while (a != null && b != null) 
+			{               
 				if (comparer.Compare(a.Value, b.Value) <= 0)
 				{ 
 					curr.Next = a; 
@@ -821,14 +1099,15 @@ namespace KS.Foundation
 		}
 
 		//Finding the middle element of the list for splitting
-		public Node GetMiddle(Node head)
+		private Node GetMiddle(Node head)
 		{
-			if(head == null) 
-				return head;
+			if (head == null) 
+				return null;
 
-			Node slow, fast;
-			slow = fast = head;
-			while(fast.Next != null && fast.Next.Next != null) 
+			Node slow = head;
+			Node fast = head;
+
+			while (fast.Next != null && fast.Next.Next != null) 
 			{
 				slow = slow.Next; 
 				fast = fast.Next.Next;
@@ -836,90 +1115,135 @@ namespace KS.Foundation
 			return slow;
 		}
 
-		public Node GetMiddlePrevious(Node first, Node last)
+		/// <summary>
+		/// Interne Hilfsmethode, um den aktuellen Sortierungszustand thread-sicher zu prüfen.
+		/// </summary>
+		public bool TrueIsSortedCheck()
 		{
-			if(first == null) 
-				return null;
-			if (first == last)
-				return first;
-			Node slow, fast, prev;
-			slow = fast = first;
+			Node curr = Head;
+			if (curr == null) 
+				return true;
 
-			prev = null;
-			while(fast.Next != last && fast.Next.Next != last)
+			IComparer<T> comp = Comparer ?? Comparer<T>.Default;
+			T prevVal = curr.Value;
+
+			while (curr != null)
 			{
-				prev = slow;
-				slow = slow.Next;
-				fast = fast.Next.Next;
+				Node nextNode = curr.Next;
+				if (nextNode == null)
+					break;
+
+				T currentVal = nextNode.Value;
+
+				if (comp.Compare(prevVal, currentVal) > 0)
+				{
+					return false;
+				}
+
+				prevVal = currentVal;
+				curr = nextNode;
 			}
 
-			return prev;
+			return true;
 		}
 	}
 
 	public static class LinkedListExtensions
-	{		
-		public static void DumpNodes<T>(this ClassicLinkedList<T> list) where T: IComparable<T>
+	{       
+		/// <summary>
+		/// Gibt alle Werte der Liste auf der Konsole aus (Thread-sicher für Reader).
+		/// </summary>
+		public static void DumpNodes<T>(this ClassicLinkedList<T> list)
 		{
 			if (list == null) 
 			{
-				Console.WriteLine("LinkedList<T> DumpNodes: list is null.");
+				Console.WriteLine("ClassicLinkedList<T> DumpNodes: list is null.");
+				return;
 			}
 
-			ClassicLinkedList<T>.Node tempNode = list.Head; 
-			while (tempNode != null)
+			var curr = list.Head; 
+			while (curr != null)
 			{
-				Console.WriteLine(tempNode.Value);
-				tempNode = tempNode.Next;
-			}
-		}
-
-		[DebuggerStepThrough]
-		public static void ForEach<T>(this ClassicLinkedList<T> list, Action<T> action) where T : IComparable<T>
-		{
-			ClassicLinkedList<T>.Node curr = list.Head;
-			while (curr != null) 
-			{
-				action (curr.Value);
+				Console.WriteLine(curr.Value);
 				curr = curr.Next;
 			}
 		}
 
-		public static ClassicLinkedList<T>.Node Skip<T>(this ClassicLinkedList<T>.Node node, int count) where T : IComparable<T>
+		/// <summary>
+		/// Führt eine Aktion für jedes Element der Liste aus (Lock-Free Reader Loop).
+		/// </summary>
+		[DebuggerStepThrough]
+		public static void ForEach<T>(this ClassicLinkedList<T> list, Action<T> action)
+		{
+			if (list == null || action == null)
+				return;
+
+			var curr = list.Head;
+			while (curr != null) 
+			{
+				// Lokalen Knoten-Referenz sichern
+				var nextNode = curr.Next;
+				action(curr.Value);
+				curr = nextNode;
+			}
+		}
+
+		/// <summary>
+		/// Springt ausgehend von 'node' um 'count' Schritte nach vorne.
+		/// </summary>
+		public static ClassicLinkedList<T>.Node Skip<T>(this ClassicLinkedList<T>.Node node, int count)
 		{
 			var nx = node;
 			int i = 0;
-			while (i++ < count && nx != null)
-				nx = nx.Next;			
+			while (i < count && nx != null)
+			{
+				nx = nx.Next;
+				i++;
+			}
 			return nx;
 		}
 
-		public static ClassicLinkedList<T>.Node Seek<T>(this ClassicLinkedList<T> list, int index) where T : IComparable<T>
+		/// <summary>
+		/// Liefert den Knoten an einer bestimmten Index-Position.
+		/// </summary>
+		public static ClassicLinkedList<T>.Node Seek<T>(this ClassicLinkedList<T> list, int index)
 		{
-			if (index < 0 || index >= list.Count)
+			if (list == null || index < 0 || index >= list.Count)
 				return null;
-			return list.Head.Skip (index);
+
+			var head = list.Head;
+			if (head == null)
+				return null;
+
+			return head.Skip(index);
 		}
 
-		public static ClassicLinkedList<T>.Node GetNext<T>(this ClassicLinkedList<T>.Node node) where T : IComparable<T>
+		/// <summary>
+		/// Holt den Nachfolger eines Knotens mit Null-Absicherung.
+		/// </summary>
+		public static ClassicLinkedList<T>.Node GetNext<T>(this ClassicLinkedList<T>.Node node)
 		{
-			if (node == null)
-				return null;
-			return node.Next;
+			return node?.Next;
 		}
 
-		public static void SetNext<T>(this ClassicLinkedList<T>.Node node, ClassicLinkedList<T>.Node target) where T : IComparable<T>
+		/// <summary>
+		/// Setzt den Nachfolger eines Knotens mit Null-Absicherung.
+		/// </summary>
+		public static void SetNext<T>(this ClassicLinkedList<T>.Node node, ClassicLinkedList<T>.Node target)
 		{
 			if (node != null)
 				node.Next = target;
 		}
 
-		public static T GetValue<T>(this ClassicLinkedList<T>.Node node) where T : IComparable<T>
+		/// <summary>
+		/// Liest den Wert eines Knotens mit Null-Absicherung.
+		/// </summary>
+		public static T GetValue<T>(this ClassicLinkedList<T>.Node node)
 		{
 			if (node == null)
-				return default(T);
-			return (T)node.Value;
+				return default;
+			return node.Value;
 		}
-	}		
+	}
 }
 
