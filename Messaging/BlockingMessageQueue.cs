@@ -25,11 +25,21 @@ namespace KS.Foundation
 {
     public class BlockingMessageQueue<T> where T : IFoundationMessage
     {
-        readonly int m_Size = 0;
+        readonly int m_Size = 50;
         readonly LinkedList<T> m_Queue = new LinkedList<T>();
-        readonly Dictionary<string, LinkedListNode<T>> m_Dict = new Dictionary<string,LinkedListNode<T>>();
+        readonly Dictionary<string, LinkedListNode<T>> m_Dict = new Dictionary<string, LinkedListNode<T>>();
         readonly object SyncObject = new object();
         bool m_Quit = false;
+
+        public BlockingMessageQueue()
+        {
+            m_Size = 50;
+        }
+
+        public BlockingMessageQueue(int size)
+        {
+            m_Size = size;
+        }
 
         public void ResetStart()
         {
@@ -43,8 +53,12 @@ namespace KS.Foundation
 
         public void Clear()
         {
-            m_Dict.Clear();
-            m_Queue.Clear();
+            lock (SyncObject)
+            {
+                m_Dict.Clear();
+                m_Queue.Clear();
+                Monitor.PulseAll(SyncObject);
+            }
         }
 
         public void Start()
@@ -61,20 +75,9 @@ namespace KS.Foundation
             {
                 lock (SyncObject)
                 {
-                    return (!m_Quit);
+                    return !m_Quit;
                 }
             }
-        }
-
-        public BlockingMessageQueue()
-        {
-            //m_Size = 500;
-            m_Size = 50;
-        }
-
-        public BlockingMessageQueue(int size)
-        {
-            m_Size = size;
         }
 
         public void Quit()
@@ -82,11 +85,9 @@ namespace KS.Foundation
             lock (SyncObject)
             {
                 m_Quit = true;
-
                 Monitor.PulseAll(SyncObject);
             }
         }
-
 
         public bool TryEnqueue(T t, int millisecondsTimeout = -1)
         {
@@ -98,7 +99,8 @@ namespace KS.Foundation
                 if (m_Quit || m_Queue.Count >= m_Size)
                     return false;
 
-                return Enqueue(t);
+                EnqueueInternal(t);
+                return true;
             }
             finally
             {
@@ -111,39 +113,48 @@ namespace KS.Foundation
             lock (SyncObject)
             {
                 while (!m_Quit && m_Queue.Count >= m_Size)
+                {
                     if (!Monitor.Wait(SyncObject))
                         return false;
+                }
 
                 if (m_Quit)
                     return false;
 
-                //m_Queue.Enqueue(t);
-
-                string messageKey = t.Subject;
-                if (Count > 0 && t.ShouldReEnqueue && m_Dict.TryGetValue(messageKey, out LinkedListNode<T> node))
-                {
-                    if (node != null && node != m_Queue.Last)
-                    {
-                        m_Queue.Remove(node);
-                        m_Dict.Remove(messageKey);
-
-                        node = m_Queue.AddLast(t);
-                        m_Dict.Add(messageKey, node);
-                    }
-                }
-                else
-                {
-                    node = m_Queue.AddLast(t);
-                    if (t.ShouldReEnqueue && !m_Dict.ContainsKey(messageKey))
-                        m_Dict.Add(messageKey, node);
-                }
-
-                Monitor.PulseAll(SyncObject);
+                EnqueueInternal(t);
             }
 
             return true;
         }
 
+        /// <summary>
+        /// Interne Hilfsmethode – setzt voraus, dass SyncObject bereits geholtet wird!
+        /// </summary>
+        private void EnqueueInternal(T t)
+        {
+            string messageKey = t.Subject;
+            if (m_Queue.Count > 0 && t.ShouldReEnqueue && messageKey != null && m_Dict.TryGetValue(messageKey, out LinkedListNode<T> node))
+            {
+                if (node != null && node != m_Queue.Last)
+                {
+                    m_Queue.Remove(node);
+                    m_Dict.Remove(messageKey);
+
+                    node = m_Queue.AddLast(t);
+                    m_Dict[messageKey] = node;
+                }
+            }
+            else
+            {
+                LinkedListNode<T> newNode = m_Queue.AddLast(t);
+                if (t.ShouldReEnqueue && messageKey != null && !m_Dict.ContainsKey(messageKey))
+                {
+                    m_Dict.Add(messageKey, newNode);
+                }
+            }
+
+            Monitor.PulseAll(SyncObject);
+        }
 
         public bool TryDequeue(out T t, int millisecondsTimeout = -1)
         {
@@ -155,7 +166,13 @@ namespace KS.Foundation
 
             try
             {
-                return Dequeue(out t);
+                if (m_Quit || m_Queue.Count == 0)
+                {
+                    t = default(T);
+                    return false;
+                }
+
+                return DequeueInternal(out t);
             }
             finally
             {
@@ -165,25 +182,46 @@ namespace KS.Foundation
 
         public bool Dequeue(out T t)
         {
-            t = default(T);
-
             lock (SyncObject)
             {
                 while (!m_Quit && m_Queue.Count == 0)
+                {
                     if (!Monitor.Wait(SyncObject))
+                    {
+                        t = default(T);
                         return false;
+                    }
+                }
 
                 if (m_Queue.Count == 0) 
-					return false;
+                {
+                    t = default(T);
+                    return false;
+                }
 
-                t = m_Queue.First.Value;
-                m_Queue.RemoveFirst();
-				m_Dict.Remove(t.Subject);
-				if (Count == 0)
-					m_Dict.Clear ();
-                Monitor.PulseAll(SyncObject);
+                return DequeueInternal(out t);
+            }
+        }
+
+        /// <summary>
+        /// Interne Hilfsmethode – setzt voraus, dass SyncObject bereits geholtet wird!
+        /// </summary>
+        private bool DequeueInternal(out T t)
+        {
+            t = m_Queue.First.Value;
+            m_Queue.RemoveFirst();
+
+            if (t.ShouldReEnqueue && t.Subject != null)
+            {
+                m_Dict.Remove(t.Subject);
             }
 
+            if (m_Queue.Count == 0)
+            {
+                m_Dict.Clear();
+            }
+
+            Monitor.PulseAll(SyncObject);
             return true;
         }
 
@@ -191,7 +229,10 @@ namespace KS.Foundation
         {
             get
             {
-                return m_Queue.Count;
+                lock (SyncObject)
+                {
+                    return m_Queue.Count;
+                }
             }
         }
 
@@ -199,7 +240,10 @@ namespace KS.Foundation
         {
             get
             {
-                return (float)Count / (float)m_Size;
+                lock (SyncObject)
+                {
+                    return (float)m_Queue.Count / (float)m_Size;
+                }
             }
         }
     }

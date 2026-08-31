@@ -28,10 +28,14 @@ namespace KS.Foundation
 {
     public class MessageQueue<T> : DisposableObject, IObservable<T> where T : IFoundationMessage
     {        
-        protected BlockingMessageQueue<T> m_Messages = null;
-        protected Observable<T> m_Observable = null;
-        protected CancellationTokenSource m_TokenSource = null;
-        protected Task m_Task = null;
+        protected BlockingMessageQueue<T> m_Messages;
+        protected Observable<T> m_Observable;
+        protected CancellationTokenSource m_TokenSource;
+        protected Task m_Task;
+
+        private volatile bool m_IsRunning = false;
+        private int m_SubscriptionCount = 0;
+        protected int m_SuspendCounter = 0;
 
         public MessageQueue(bool startup)
         {        
@@ -42,20 +46,16 @@ namespace KS.Foundation
                 Start();
         }
 
-        private bool m_IsRunning = false;
-        public bool IsRunning
-        {
-            get
-            {
-                return m_IsRunning && !IsDisposed;
-            }
-        }        
+        public bool IsRunning => m_IsRunning && !IsDisposed;
 
         public virtual bool CanSendMessage
         {
             get
             {
-                return !IsDisposed && m_IsRunning && m_SuspendCounter == 0 && m_SubscriptionCount > 0;
+                return !IsDisposed 
+                    && m_IsRunning 
+                    && Volatile.Read(ref m_SuspendCounter) == 0 
+                    && Volatile.Read(ref m_SubscriptionCount) > 0;
             }
         }
 
@@ -66,22 +66,22 @@ namespace KS.Foundation
 
             lock (SyncObject)
             {                
+                if (m_IsRunning) return;
+
                 m_Messages.Start();
                 m_IsRunning = true;
                 m_TokenSource = new CancellationTokenSource();
-                m_Task = new Task(LoopRun, m_TokenSource.Token, TaskCreationOptions.LongRunning);
-                m_Task.Start(TaskScheduler.Default);                
+                
+                // Korrekter Start eines LongRunning-Background-Tasks
+                m_Task = Task.Factory.StartNew(
+                    LoopRun, 
+                    m_TokenSource.Token, 
+                    TaskCreationOptions.LongRunning, 
+                    TaskScheduler.Default);              
             }
         }
 
-        private int m_SubscriptionCount = 0;
-        public int SubscriberCount 
-        {
-            get
-            {
-                return m_SubscriptionCount;
-            }
-        }
+        public int SubscriberCount => Volatile.Read(ref m_SubscriptionCount);
 
         public void Stop()
         {
@@ -90,15 +90,22 @@ namespace KS.Foundation
 
             lock (SyncObject)
             {
+                if (!m_IsRunning) return;
+
                 if (m_TokenSource != null)
+                {
                     m_TokenSource.Cancel();
+                }
 
                 if (m_Messages != null)
+                {
                     m_Messages.Quit();
+                }
 
                 if (m_Task != null)
                 {
-                    m_Task.Wait(100);
+                    // Kurz warten, bis die Loop abgewickelt ist
+                    m_Task.Wait(150);
                     m_Task = null;
                 }
 
@@ -108,16 +115,16 @@ namespace KS.Foundation
 
         protected void LoopRun()
         {
-            //while (!m_Task.IsCanceled)
-            while (!m_TokenSource.IsCancellationRequested && !IsDisposed)
+            while (!IsDisposed && m_TokenSource != null && !m_TokenSource.IsCancellationRequested)
             {                
-                T message;
-                if (m_Messages.Dequeue(out message) && message != null)
+                if (m_Messages.Dequeue(out T message) && message != null)
                 {
                     try
                     {
-                        if (!m_TokenSource.IsCancellationRequested)
+                        if (m_TokenSource != null && !m_TokenSource.IsCancellationRequested)
+                        {
                             m_Observable.SendMessage(message);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -127,59 +134,22 @@ namespace KS.Foundation
             }
         }
 
-        public struct MessageParams
-        {            
-			public BlockingMessageQueue<T> Queue;
-			public T Message;
+        public int Count => m_Messages.Count;
 
-            public override string ToString()
-            {
-                if (Message == null)
-                    return base.ToString();
-
-                return Message.ToString();
-            }
-        }
-
-        public int Count
-        {
-            get
-            {
-                return m_Messages.Count;
-            }
-        }
-
-        public float Workload
-        {
-            get
-            {
-                //if (m_Messages.Workload > 0.95f)
-                //{
-                //    T var = default(T);
-                //    bool success = false;
-
-                //    do
-                //    {
-                //        success = m_Messages.Dequeue(out var);
-                //        System.Diagnostics.Debug.WriteLine(var.ToString());
-                //    } while (success);
-
-                //    int iTest = 0;                    
-                //}
-
-                return m_Messages.Workload;
-            }
-        }
+        public float Workload => m_Messages.Workload;
 
         public void SendMessage(T message)
         {
             try
             {
-                if (m_IsRunning && m_SuspendCounter == 0 && m_SubscriptionCount > 0 && !m_TokenSource.IsCancellationRequested)
+                if (m_IsRunning 
+                    && Volatile.Read(ref m_SuspendCounter) == 0 
+                    && Volatile.Read(ref m_SubscriptionCount) > 0 
+                    && m_TokenSource != null 
+                    && !m_TokenSource.IsCancellationRequested)
                 {
-                    Task.Factory.StartNew((p) => ((MessageParams)p).Queue.Enqueue(((MessageParams)p).Message), 
-                        new MessageParams { Queue = this.m_Messages, Message = message }, m_TokenSource.Token, 
-						TaskCreationOptions.PreferFairness, TaskScheduler.Default);
+                    // Direktes synchrones Enqueueing (sehr schnell, bewahrt Reihenfolge)
+                    m_Messages.Enqueue(message);
                 }
             }
             catch (Exception ex)
@@ -188,59 +158,92 @@ namespace KS.Foundation
             }            
         }
 
-        // never called
         public IDisposable Subscribe(IObserver<T> observer)
         {
-            m_SubscriptionCount++;
-            if (m_SubscriptionCount == 1)
-                Start();
+            lock (SyncObject)
+            {
+                m_SubscriptionCount++;
+                if (m_SubscriptionCount == 1 || !m_IsRunning)
+                {
+                    Start();
+                }
 
-            return m_Observable.Subscribe(observer);
+                var innerUnsubscriber = m_Observable.Subscribe(observer);
+                return new SubscriptionWrapper(innerUnsubscriber, OnObserverUnsubscribed);
+            }
+        }
+
+        private void OnObserverUnsubscribed()
+        {
+            lock (SyncObject)
+            {
+                if (m_SubscriptionCount > 0)
+                    m_SubscriptionCount--;
+
+                if (m_SubscriptionCount <= 0)
+                {
+                    Stop();
+                    m_SubscriptionCount = m_Observable.ObserverCount;
+                }
+            }
         }
 
         public void Unsubscribe(IObserver<T> observer)
         {            
-            this.m_Observable.Unsubscribe(observer);
-
-            if (m_SubscriptionCount > 0)
-                m_SubscriptionCount--;
-
-            if (m_SubscriptionCount <= 0)
+            lock (SyncObject)
             {
-                Stop();
-                m_SubscriptionCount = m_Observable.ObserverCount;
+                m_Observable.Unsubscribe(observer);
+                OnObserverUnsubscribed();
             }
         }
 
         // *** Suspension
-        protected int m_SuspendCounter = 0;
         public void Suspend()
         {
-            m_SuspendCounter++;
+            Interlocked.Increment(ref m_SuspendCounter);
         }
 
         public void Resume()
         {
-            if (m_SuspendCounter > 0)
-                m_SuspendCounter--;
-        }
-
-        public bool IsSuspended
-        {
-            get
+            lock (SyncObject)
             {
-                return m_SuspendCounter > 0;
+                if (m_SuspendCounter > 0)
+                    Interlocked.Decrement(ref m_SuspendCounter);
             }
         }
+
+        public bool IsSuspended => Volatile.Read(ref m_SuspendCounter) > 0;
 
         protected override void CleanupManagedResources()
         {
             Suspend();
             Stop();
-            //m_Observable.SendCompleted();
             m_Observable.Dispose();            
 
             base.CleanupManagedResources();
+        }
+
+        /// <summary>
+        /// Kapselt den Unsubscriber, um das Abmelden sauber zu zählen
+        /// </summary>
+        private class SubscriptionWrapper : DisposableObject
+        {
+            private IDisposable m_InnerUnsubscriber;
+            private readonly Action m_OnUnsubscribe;
+
+            public SubscriptionWrapper(IDisposable innerUnsubscriber, Action onUnsubscribe)
+            {
+                m_InnerUnsubscriber = innerUnsubscriber;
+                m_OnUnsubscribe = onUnsubscribe;
+            }
+
+            protected override void CleanupManagedResources()
+            {
+                m_InnerUnsubscriber?.Dispose();
+                m_InnerUnsubscriber = null;
+                m_OnUnsubscribe?.Invoke();
+                base.CleanupManagedResources();
+            }
         }
     }
 }

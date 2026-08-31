@@ -25,27 +25,50 @@ namespace KS.Foundation
 {
     public class BlockingQueue<T>
     {
-        readonly int m_Size = 0;
-        readonly Queue<T> m_Queue = new Queue<T>();
-        readonly object SyncObject = new object();
-        bool m_Quit = false;
+        private readonly int m_Size;
+        private readonly Queue<T> m_Queue = new Queue<T>();
+        private readonly object SyncObject = new object();
+        private bool m_Quit = false;
+
+        /// <summary>
+        /// Parameterloser Konstruktor (z. B. für Generic Constraints wie where T : new())
+        /// Initialisiert die Queue mit einer Standardgröße von 100.
+        /// </summary>
+        public BlockingQueue() : this(100)
+        {
+        }
+
+        /// <summary>
+        /// Initialisiert die Queue mit einer benutzerdefinierten Kapazität.
+        /// </summary>
+        public BlockingQueue(int size)
+        {            
+            m_Size = size > 0 ? size : 100;
+        }
 
         public void ResetStart()
         {
-            lock (SyncObject) {
+            lock (SyncObject) 
+            {
                 m_Queue.Clear();
                 m_Quit = false;
+                Monitor.PulseAll(SyncObject);
             }
         }
 
         public void Clear()
         {
-            m_Queue.Clear();
+            lock (SyncObject)
+            {
+                m_Queue.Clear();
+                Monitor.PulseAll(SyncObject); // Benachrichtigt evtl. blockierte Enqueuer
+            }
         }
 
         public void Start()
         {
-            lock (SyncObject) {
+            lock (SyncObject) 
+            {
                 m_Quit = false;
             }
         }
@@ -53,99 +76,116 @@ namespace KS.Foundation
         public bool IsStarted
         {
             get {
-                lock (SyncObject) {
-                    return (!m_Quit);
+                lock (SyncObject) 
+                {
+                    return !m_Quit;
                 }
             }
         }
 
-		public BlockingQueue()
-		{
-			m_Size = 100;
-		}
-
-		public BlockingQueue(int size = 100)
-        {            
-			m_Size = size;
-        }
-			        
         public void Quit()
         {
-            lock (SyncObject) {
+            lock (SyncObject) 
+            {
                 m_Quit = true;
                 Monitor.PulseAll(SyncObject);
             }
         }
 
-        public bool TryEnqueue(T t, int millisecondsTimeout = -1)
-        {
-            if (!Monitor.TryEnter(SyncObject, millisecondsTimeout))                            
-                return false;
-            try {
-                if (m_Quit || m_Queue.Count >= m_Size)
-                    return false;
-                return Enqueue(t);
-            } finally {
-                Monitor.Exit(SyncObject);
-            }
-        }
-
         public bool Enqueue(T t)
         {
-            lock (SyncObject) {
-                while (!m_Quit && m_Queue.Count >= m_Size)
-                    if (!Monitor.Wait(SyncObject))
-                        return false;
-                if (m_Quit)
-                    return false;
-                m_Queue.Enqueue(t);
-                Monitor.PulseAll(SyncObject);
-            }
-            return true;
+            return TryEnqueue(t, Timeout.Infinite);
         }
 
-
-        public bool TryDequeue(out T t, int millisecondsTimeout = -1)
+        public bool TryEnqueue(T t, int millisecondsTimeout = Timeout.Infinite)
         {
-            if (!Monitor.TryEnter(SyncObject, millisecondsTimeout)) {
-                t = default(T);
-                return false;
-            }
-            try {
-                return Dequeue(out t);
-            }
-            finally {
-                Monitor.Exit(SyncObject);
+            long lockTimeoutTicks = millisecondsTimeout < 0 
+                ? long.MaxValue 
+                : DateTime.UtcNow.Ticks + TimeSpan.FromMilliseconds(millisecondsTimeout).Ticks;
+
+            lock (SyncObject)
+            {
+                while (!m_Quit && m_Queue.Count >= m_Size)
+                {
+                    int remainingTimeout = GetRemainingTimeout(lockTimeoutTicks);
+                    if (remainingTimeout == 0 || !Monitor.Wait(SyncObject, remainingTimeout))
+                    {
+                        return false; // Timeout erreicht
+                    }
+                }
+
+                if (m_Quit)
+                    return false;
+
+                m_Queue.Enqueue(t);
+                Monitor.PulseAll(SyncObject);
+                return true;
             }
         }
 
         public bool Dequeue(out T t)
         {
+            return TryDequeue(out t, Timeout.Infinite);
+        }
+
+        public bool TryDequeue(out T t, int millisecondsTimeout = Timeout.Infinite)
+        {
             t = default(T);
-            lock (SyncObject) {
+            long lockTimeoutTicks = millisecondsTimeout < 0 
+                ? long.MaxValue 
+                : DateTime.UtcNow.Ticks + TimeSpan.FromMilliseconds(millisecondsTimeout).Ticks;
+
+            lock (SyncObject)
+            {
                 while (!m_Quit && m_Queue.Count == 0)
-                    if (!Monitor.Wait(SyncObject))
-                        return false;
+                {
+                    int remainingTimeout = GetRemainingTimeout(lockTimeoutTicks);
+                    if (remainingTimeout == 0 || !Monitor.Wait(SyncObject, remainingTimeout))
+                    {
+                        return false; // Timeout erreicht
+                    }
+                }
+
                 if (m_Queue.Count == 0) 
-					return false;
+                    return false;
+
                 t = m_Queue.Dequeue();
                 Monitor.PulseAll(SyncObject);
+                return true;
             }
-            return true;
         }
 
         public int Count
         {
             get {
-                return m_Queue.Count;
+                lock (SyncObject)
+                {
+                    return m_Queue.Count;
+                }
             }
         }
 
         public float Workload
         {
             get {
-                return (float)Count / (float)m_Size;
+                lock (SyncObject)
+                {
+                    return (float)m_Queue.Count / (float)m_Size;
+                }
             }
+        }
+
+        private static int GetRemainingTimeout(long lockTimeoutTicks)
+        {
+            if (lockTimeoutTicks == long.MaxValue)
+                return Timeout.Infinite;
+
+            long remainingTicks = lockTimeoutTicks - DateTime.UtcNow.Ticks;
+            if (remainingTicks <= 0)
+                return 0;
+
+            long millis = remainingTicks / TimeSpan.TicksPerMillisecond;
+            return millis > int.MaxValue ? int.MaxValue : (int)millis;
         }
     }
 }

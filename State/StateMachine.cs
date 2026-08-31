@@ -28,6 +28,8 @@ namespace KS.Foundation
     [DebuggerDisplay("Current State = {CurrentState.Name}")]
     public abstract class StateMachine<T> where T:StateMachine<T>
     {
+        public readonly object SyncObject = new object();
+
         public State CurrentState { get; private set; }
         public State PreviousState { get; private set; }
  
@@ -45,8 +47,11 @@ namespace KS.Foundation
             //System.Diagnostics.Debug.WriteLine(@event, "StateMachine: EventHappens");
             //System.Diagnostics.Debug.WriteLine(args, "StateMachine: args");
 
-            PreviousState = CurrentState;
-            CurrentState = CurrentState.OnEvent((T)this, @event, args);
+            lock (SyncObject)
+            {
+                PreviousState = CurrentState;
+                CurrentState = CurrentState.OnEvent((T)this, @event, args);
+            }
         }
  
         /// <summary>

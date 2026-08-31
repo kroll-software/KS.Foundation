@@ -99,56 +99,68 @@ namespace KS.Foundation
 		}
 
 		public virtual void SendMessage(T message)
-		{			
-			if (!IsDisposed && !message.IsDefault ()) {				
-				// no locking here, this deadlocks when locked.
-				try {				
-					m_HashObservers.ToArray ().Where (obs => obs != null).ForEach (observer => {                    
-						try {
-							observer.OnNext (message);
-						} catch (Exception ex) {
-							ex.LogError ();
-						}
-					});
-				} catch (Exception ex) {
-					ex.LogError ();
-				}
-			}
-		}
+        {           
+            if (!IsDisposed && !message.IsDefault()) {             
+                // no locking here, this deadlocks when locked.
+                try {               
+                    var observers = m_HashObservers.ToArray();
+                    for (int i = 0; i < observers.Length; i++) {
+                        var observer = observers[i];
+                        if (observer == null) continue;
 
-		public virtual void SendError(Exception exception)
-		{
-			if (!IsDisposed && exception != null) {
-				try {
-					m_HashObservers.ToArray ().Where (obs => obs != null).ForEach (o => {
-						try {
-							o.OnError (exception);
-						} catch (Exception ex) {
-							ex.LogError ();
-						}
-					});
-				} catch (Exception ex) {
-					ex.LogError ();
-				}
-			}
-		}
+                        try {
+                            observer.OnNext(message);
+                        } catch (Exception ex) {
+                            ex.LogError();
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.LogError();
+                }
+            }
+        }
 
-		public virtual void SendCompleted()
-		{
-			if (!IsDisposed) {
-				try {
-					m_HashObservers.ToArray ().Where (obs => obs != null).ForEach (o => {
-						try {
-							o.OnCompleted ();	
-						} catch (Exception ex) {
-							ex.LogError();
-						}
-					});
-				} catch (Exception ex) {
-					ex.LogError ();
-				}
-			}
-		}
+        public virtual void SendError(Exception exception)
+        {
+            if (!IsDisposed && exception != null) {
+                try {
+                    var observers = m_HashObservers.ToArray();
+                    for (int i = 0; i < observers.Length; i++) {
+                        var observer = observers[i];
+                        if (observer == null) continue;
+
+                        try {
+                            observer.OnError(exception);
+                        } catch (Exception ex) {
+                            ex.LogError();
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.LogError();
+                }
+            }
+        }
+
+        public virtual void SendCompleted()
+        {
+            if (!IsDisposed) {
+                try {
+                    var observers = m_HashObservers.ToArray();
+                    for (int i = 0; i < observers.Length; i++) {
+                        var observer = observers[i];
+                        if (observer == null) continue;
+
+                        try {
+                            observer.OnCompleted();   
+                        } catch (Exception ex) {
+                            ex.LogError();
+                        }
+                    }
+                } catch (Exception ex) {
+                    ex.LogError();
+                }
+            }
+        }		
 
 		protected override void CleanupManagedResources()
 		{
@@ -509,17 +521,59 @@ namespace KS.Foundation
 		public Action<Exception> OnErrorAction { get; set; }
 		public Action OnCompletedAction { get; set; }
 
+		private int m_IsProcessing = 0; // 0 = idle, 1 = running
+
 		public void OnNext(T value)
 		{
 			if (OnNextAction != null && !IsDisposed) {
-				if (MessageQueue.Enqueue (value)) {
-					Task.Run (() => {
-						T v;
-						while (MessageQueue.Dequeue (out v)) {
-							OnNextAction (v);
-						}
-					});
+				MessageQueue.Enqueue(value);
+
+				// Sicherstellen, dass nur EIN Worker-Task gleichzeitig die Queue leert
+				if (Interlocked.CompareExchange(ref m_IsProcessing, 1, 0) == 0) {
+					Task.Run(ProcessQueue);
 				}
+			}
+		}
+
+		private void ProcessQueue()
+		{
+			try {
+				T v;
+				while (MessageQueue.Dequeue(out v)) {
+					if (IsDisposed) break;
+					try {
+						OnNextAction?.Invoke(v);
+					} catch (Exception ex) {
+						ex.LogError();
+					}
+				}
+			} finally {
+				// Flag zurücksetzen
+				Interlocked.Exchange(ref m_IsProcessing, 0);
+
+				// Edge-Case abfangen: Falls zwischen dem letzten Dequeue und dem Flag-Reset 
+				// ein neues Element eingetroffen ist, starten wir den Worker neu.
+				if (MessageQueue.Count > 0 && !IsDisposed) {
+					if (Interlocked.CompareExchange(ref m_IsProcessing, 1, 0) == 0) {
+						Task.Run(ProcessQueue);
+					}
+				}
+			}
+		}
+
+		public void OnCompleted()
+		{
+			if (OnCompletedAction != null && !IsDisposed) {
+				// Wenn noch ein Worker läuft, warten wir kurz im Task, 
+				// damit OnCompletedAction ERST NACH den verbleibenden Nachrichten feuert
+				Task.Run(() => {
+					ProcessQueue(); // Abarbeiten der Rest-Queue
+					try {
+						OnCompletedAction?.Invoke();
+					} catch (Exception ex) {
+						ex.LogError();
+					}
+				});
 			}
 		}
 
@@ -528,19 +582,6 @@ namespace KS.Foundation
 			if (OnErrorAction != null && !IsDisposed) {
 				OnErrorAction (error);
 				MessageQueue.Clear ();
-			}
-		}
-
-		public void OnCompleted()
-		{
-			if (OnCompletedAction != null && !IsDisposed) {
-				Task.Run ((() => {
-					T v;
-					while (MessageQueue.Dequeue (out v)) {
-						OnNextAction(v);
-					}
-				}));
-				OnCompletedAction ();
 			}
 		}
 
@@ -557,29 +598,29 @@ namespace KS.Foundation
 
 		public void Unsubscribe(Observable<T> observable)
 		{
-			//lock (SyncObject)
-			//{
-			if (observable == null)
-				return;
-			try
-			{                        
-				Unsubscriber<T> target = null;
-				if (m_DictObservables.TryGetValue(observable, out target))
-				{
-					m_DictObservables.Remove(observable);
-					if (target != null)
-						target.Dispose();
+			lock (SyncObject)
+			{
+				if (observable == null)
+					return;
+				try
+				{                        
+					Unsubscriber<T> target = null;
+					if (m_DictObservables.TryGetValue(observable, out target))
+					{
+						m_DictObservables.Remove(observable);
+						if (target != null)
+							target.Dispose();
+					}
+					if (m_DictObservables.Count == 0) {
+						MessageQueue.Quit();
+						MessageQueue.Clear();
+					}
 				}
-				if (m_DictObservables.Count == 0) {
-					MessageQueue.Quit();
-					MessageQueue.Clear();
+				catch (Exception e)
+				{
+					e.LogError();
 				}
 			}
-			catch (Exception e)
-			{
-				e.LogError();
-			}                    
-			//}
 		}
 
 		public void UnsubscribeAll()
