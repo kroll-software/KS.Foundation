@@ -1,88 +1,54 @@
-﻿/*
-{*******************************************************************}
-{                                                                   }
-{          KS-Foundation Library                                    }
-{          Build rock solid DotNet applications                     }
-{          on a threadsafe foundation without the hassle            }
-{                                                                   }
-{          Copyright (c) 2014 - 2018 by Kroll-Software,             }
-{          Altdorf, Switzerland, All Rights Reserved                }
-{          www.kroll-software.ch                                    }
-{                                                                   }
-{   Licensed under the MIT license                                  }
-{   Please see LICENSE.txt for details                              }
-{                                                                   }
-{*******************************************************************}
-*/
-
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
 using System.Runtime.Serialization;
 using System.Threading;
 
 namespace KS.Foundation
 {
-	/// <summary>
-	/// Reguläres struct für ReadLock (funktioniert mit C# 12 / .NET 8)
-	/// </summary>
-	public struct ReadLock : IDisposable
-	{
-		private readonly ReaderWriterLockSlim _rwLock;
-		public ReadLock(ReaderWriterLockSlim rwLock)
-		{
-			_rwLock = rwLock;
-			_rwLock.EnterReadLock();
-		}
-		public void Dispose() => _rwLock.ExitReadLock();
-	}
+    public readonly struct ReadLock : IDisposable
+    {
+        private readonly ReaderWriterLockSlim _rwLock;
 
-	/// <summary>
-	/// Reguläres struct für WriteLock (funktioniert mit C# 12 / .NET 8)
-	/// </summary>
-	public struct WriteLock : IDisposable
-	{
-		private readonly ReaderWriterLockSlim _rwLock;
-		public WriteLock(ReaderWriterLockSlim rwLock)
-		{
-			_rwLock = rwLock;
-			_rwLock.EnterWriteLock();
-		}
-		public void Dispose() => _rwLock.ExitWriteLock();
-	}
+        public ReadLock(ReaderWriterLockSlim rwLock)
+        {
+            _rwLock = rwLock;
+            _rwLock?.EnterReadLock();
+        }
+
+        public void Dispose() => _rwLock?.ExitReadLock();
+    }
+
+    public readonly struct WriteLock : IDisposable
+    {
+        private readonly ReaderWriterLockSlim _rwLock;
+
+        public WriteLock(ReaderWriterLockSlim rwLock)
+        {
+            _rwLock = rwLock;
+            _rwLock?.EnterWriteLock();
+        }
+
+        public void Dispose() => _rwLock?.ExitWriteLock();
+    }
 
     public class BinarySortedList<T> : List<T>, IEnumerable<T>
     {
-        // Verwendung von ReadOnly Property-Definitionen
-        public ReaderWriterLockSlim RWLock { get; } = new(LockRecursionPolicy.SupportsRecursion);
+        [NonSerialized]
+        private ReaderWriterLockSlim _lock = new(LockRecursionPolicy.SupportsRecursion);
 
-        [OnDeserializing]
-        protected virtual void OnDeserializing(StreamingContext context)
-        {
-            // Initialisierung im Konstruktor ist besser, aber für Deserialisierung beibehalten.
-            // Beachten: Die Signatur für OnDeserializing/OnDeserialized erfordert 'StreamingContext'.
-            // Die RWLock-Initialisierung im Konstruktor überschreibt dies (siehe unten).
-            // Da wir RWLock bereits initialisiert haben, ist dieser Hook nur bei einer 
-            // tatsächlichen Deserialisierung von Bedeutung.
-            // RWLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
-        }
+        /// <summary>
+        /// Greift thread-sicher auf das Lock zu und initialisiert es nach einer Deserialisierung automatisch neu.
+        /// </summary>
+        private ReaderWriterLockSlim Lock => _lock ??= new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
 
-        [OnDeserialized]
-        protected virtual void OnDeserialized(StreamingContext context)
-        {
-            // Die Basisklasse (List<T>) hat keine OnDeserialized-Methode aufzurufen.
-            // Wir ersetzen den ursprünglichen Aufruf durch die Logik von SetDefault/EnsureComparer.
-            EnsureComparer();
-        }        
+        public ReaderWriterLockSlim RWLock => Lock;
 
         public IComparer<T> Comparer { get; protected set; } = Comparer<T>.Default;
 
-        // Bessere Konvention: DefaultCapacity als const
         protected const int DefaultCapacity = 31;
 
-        // Konstruktoren vereinfacht
         public BinarySortedList() : base(DefaultCapacity) { }
         public BinarySortedList(int capacity) : base(capacity) { }
         public BinarySortedList(IComparer<T> comparer) : this(DefaultCapacity, comparer) { }
@@ -91,35 +57,54 @@ namespace KS.Foundation
             Comparer = comparer ?? Comparer<T>.Default;
         }
 
-        public BinarySortedList(IEnumerable<T> collection) : this(collection, null) { }
-        public BinarySortedList(IEnumerable<T> collection, IComparer<T> comparer) : this()
+        public BinarySortedList(IEnumerable<T> collection, IComparer<T> comparer = null) : this()
         {
             Comparer = comparer ?? Comparer<T>.Default;
             if (collection != null)
             {
                 base.AddRange(collection);
-                NaturalMergeSort();
+                InternalNaturalMergeSort(Comparer);
             }
         }
 
-        // Getter vereinfacht mit Expression-Bodied Member und using-Deklaration
+        [OnDeserializing]
+        protected virtual void OnDeserializing(StreamingContext context)
+        {
+        }
+
+        [OnDeserialized]
+        protected virtual void OnDeserialized(StreamingContext context)
+        {
+            EnsureComparer();
+        }
+
         public new int Count
         {
             get
             {
-                using var readLock = new ReadLock(RWLock);
+                using var readLock = new ReadLock(Lock);
                 return base.Count;
             }
         }
 
+        // Für den internen Gebrauch, wenn bereits ein Lock gehalten wird:
+        public int UnlockedCount => base.Count;
         public T UnlockedItemByIndex(int index) => base[index];
 
         public new T this[int index]
         {
             get
             {
-                using var readLock = new ReadLock(RWLock);
+                using var readLock = new ReadLock(Lock);
                 return base[index];
+            }
+            set
+            {
+                using (var writeLock = new WriteLock(Lock))
+                {
+                    base[index] = value;
+                }
+                OnInsert(value);
             }
         }
 
@@ -127,8 +112,8 @@ namespace KS.Foundation
         {
             get
             {
-                using var readLock = new ReadLock(RWLock);
-                return base.Count > 0 ? base[0] : default; // default anstelle von default(T)
+                using var readLock = new ReadLock(Lock);
+                return base.Count > 0 ? base[0] : default;
             }
         }
 
@@ -136,146 +121,27 @@ namespace KS.Foundation
         {
             get
             {
-                using var readLock = new ReadLock(RWLock);
+                using var readLock = new ReadLock(Lock);
                 return base.Count > 0 ? base[base.Count - 1] : default;
             }
         }
 
-        public void RemoveFirst()
+        public new void Add(T elem)
         {
-            using var writeLock = new WriteLock(RWLock);
-
-            if (base.Count > 0)
+            using (var writeLock = new WriteLock(Lock))
             {
-                T item = base[0]; // Zugriff auf base[0] innerhalb des WriteLock
-                base.RemoveAt(0);
-                OnRemove(item);
-            }
-        }
+                int index = InternalIndexOf(elem);
+                if (index < 0)
+                    index = ~index;
 
-        public void RemoveLast()
-        {
-            using var writeLock = new WriteLock(RWLock);
-
-            if (base.Count > 0)
-            {
-                T item = base[base.Count - 1]; // Zugriff auf base[Count-1] innerhalb des WriteLock
-                base.RemoveAt(base.Count - 1);
-                OnRemove(item);
-            }
-        }
-
-        public new bool Remove(T item)
-        {
-            using var writeLock = new WriteLock(RWLock);
-
-            if (base.Remove(item))
-            {
-                OnRemove(item);
-                return true;
-            }
-            return false;
-        }
-
-        public new void RemoveAt(int index)
-        {
-            using var writeLock = new WriteLock(RWLock);
-
-            T item = base[index]; // Zugriff auf base[index] innerhalb des WriteLock
-            base.RemoveAt(index);
-            OnRemove(item);
-        }
-
-        // Methoden wie FindSafe, Find, FindValue, InternalIndexOf usw.
-        // verwenden nun ebenfalls die 'using var readLock = new ReadLock(RWLock);' Syntax.
-
-        /// <summary>
-        /// This always returns a value, no bounds checks required
-        /// Except when the list is empty, returns default(T)
-        /// </summary>
-        public T FindSafe(T search)
-        {
-            using var readLock = new ReadLock(RWLock);
-
-            if (base.Count == 0)
-                return default;
-
-            EnsureComparer();
-
-            // ... (Rest der Logik von FindSafe)
-            int a = 0;
-            int b = base.Count;
-            while (b - a > 1)
-            {
-                int mid = (a + b) / 2;
-                if (Comparer.Compare(base[mid], search) > 0)
-                    b = mid;
+                if (index >= base.Count)
+                    base.Add(elem);
                 else
-                    a = mid;
+                    base.Insert(index, elem);
             }
-
-            return base[a];
-        }
-
-        /// <summary>
-        /// This always returns a value, no bounds checks required
-        /// Except when the list is empty, returns default(T)
-        /// </summary>
-        public T Find(T elem)
-        {
-            using var readLock = new ReadLock(RWLock);
-
-            int i = InternalIndexOf(elem);
-            if (i >= 0 && i < base.Count)
-                return base[i];
-
-            return default;
-        }
-
-        public T FindValue(Func<T, int> CompareResult)
-        {
-            using var readLock = new ReadLock(RWLock);
-            int a = 0;
-            int b = base.Count;
-            while (true)
-            {
-                if (a == b)
-                    return default;
-
-                int mid = a + ((b - a) / 2);
-                switch (CompareResult(base[mid]))
-                {
-                    case -1:
-                        a = mid + 1;
-                        break;
-                    case 1:
-                        b = mid;
-                        break;
-                    case 0:
-                        return base[mid];
-                }
-            }
-        }
-
-        public int AddOrUpdate(T elem)
-        {
-            using var writeLock = new WriteLock(RWLock);
-
-            int index = InternalIndexOf(elem);
-            if (index < 0)
-                index = ~index;
-
-            if (index >= base.Count)
-                base.Add(elem);
-            else
-                base[index] = elem;
 
             OnInsert(elem);
-            return index;
         }
-
-        public virtual void OnInsert(T elem) { }
-        public virtual void OnRemove(T elem) { }
 
         public void AddLastUnlocked(T elem)
         {
@@ -290,67 +156,373 @@ namespace KS.Foundation
         /// </summary>
         public void AddLast(T elem)
         {
-            using var writeLock = new WriteLock(RWLock);
-            base.Add(elem);
-            OnInsert(elem);
-        }
-
-        public new void Add(T elem)
-        {
-            using var writeLock = new WriteLock(RWLock);
-            int index = InternalIndexOf(elem);
-            if (index < 0)
-                index = ~index;
-
-            if (index >= base.Count)
+            using (var writeLock = new WriteLock(Lock))
+            {
                 base.Add(elem);
-            else
-                base.Insert(index, elem);
+            }
 
             OnInsert(elem);
         }
 
         public new void AddRange(IEnumerable<T> collection)
         {
-            using var writeLock = new WriteLock(RWLock);
             if (collection == null)
                 return;
 
-            foreach (var elem in collection) // Ersetze .ForEach durch foreach
+            List<T> insertedItems = new List<T>();
+
+            using (var writeLock = new WriteLock(Lock))
             {
-                base.Add(elem);
-                OnInsert(elem);
+                foreach (var elem in collection)
+                {
+                    base.Add(elem);
+                    insertedItems.Add(elem);
+                }
+
+                InternalNaturalMergeSort(Comparer);
             }
 
-            InternalNaturalMergeSort(Comparer);
+            foreach (var item in insertedItems)
+            {
+                OnInsert(item);
+            }
         }
 
         public void AddRangeUnsorted(IEnumerable<T> source)
         {
-            using var writeLock = new WriteLock(RWLock);
             if (source == null)
                 return;
 
-            foreach (var elem in source) // Ersetze .ForEach durch foreach
+            List<T> insertedItems = new List<T>();
+
+            using (var writeLock = new WriteLock(Lock))
             {
-                base.Add(elem);
-                OnInsert(elem);
+                foreach (var elem in source)
+                {
+                    base.Add(elem);
+                    insertedItems.Add(elem);
+                }
+            }
+
+            foreach (var item in insertedItems)
+            {
+                OnInsert(item);
             }
         }
 
         public new void Insert(int index, T elem)
         {
-            using var writeLock = new WriteLock(RWLock);
-
             if (elem == null)
                 return;
-            base.Insert(index, elem);
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                base.Insert(index, elem);
+            }
+
             OnInsert(elem);
         }
 
-        // ... (Methoden wie InternalIndexOfElementOrPredecessor, IndexOfElementOrPredecessor, etc.
-        // sind in ihrem Kern unverändert, verwenden aber ReadLock/WriteLock).
-        
+        public int AddOrUpdate(T elem)
+        {
+            int index;
+            using (var writeLock = new WriteLock(Lock))
+            {
+                index = InternalIndexOf(elem);
+                if (index < 0)
+                {
+                    index = ~index;
+                    if (index >= base.Count)
+                        base.Add(elem);
+                    else
+                        base.Insert(index, elem);
+                }
+                else
+                {
+                    base[index] = elem;
+                }
+            }
+
+            OnInsert(elem);
+            return index;
+        }
+
+        public new bool Remove(T item)
+        {
+            bool removed;
+            using (var writeLock = new WriteLock(Lock))
+            {
+                removed = base.Remove(item);
+            }
+
+            if (removed)
+            {
+                OnRemove(item);
+            }
+
+            return removed;
+        }
+
+        public new void RemoveAt(int index)
+        {
+            T item = default;
+            bool removed = false;
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                if (index >= 0 && index < base.Count)
+                {
+                    item = base[index];
+                    base.RemoveAt(index);
+                    removed = true;
+                }
+            }
+
+            if (removed)
+            {
+                OnRemove(item);
+            }
+        }
+
+        public void RemoveFirst()
+        {
+            T item = default;
+            bool removed = false;
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                if (base.Count > 0)
+                {
+                    item = base[0];
+                    base.RemoveAt(0);
+                    removed = true;
+                }
+            }
+
+            if (removed)
+            {
+                OnRemove(item);
+            }
+        }
+
+        public void RemoveLast()
+        {
+            T item = default;
+            bool removed = false;
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                if (base.Count > 0)
+                {
+                    int lastIndex = base.Count - 1;
+                    item = base[lastIndex];
+                    base.RemoveAt(lastIndex);
+                    removed = true;
+                }
+            }
+
+            if (removed)
+            {
+                OnRemove(item);
+            }
+        }
+
+        public new int RemoveAll(Predicate<T> match)
+        {
+            if (match == null)
+                return 0;
+
+            List<T> removedItems = new List<T>();
+            int count = 0;
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                // Elemente sammeln, die entfernt werden, um OnRemove danach sicher aufzurufen
+                for (int i = base.Count - 1; i >= 0; i--)
+                {
+                    if (match(base[i]))
+                    {
+                        removedItems.Add(base[i]);
+                        base.RemoveAt(i);
+                        count++;
+                    }
+                }
+            }
+
+            foreach (var item in removedItems)
+            {
+                OnRemove(item);
+            }
+
+            return count;
+        }
+
+        public new void RemoveRange(int index, int count)
+        {
+            List<T> removedItems = new List<T>();
+
+            using (var writeLock = new WriteLock(Lock))
+            {
+                if (index < 0 || count < 0 || index + count > base.Count)
+                    throw new ArgumentOutOfRangeException();
+
+                for (int i = 0; i < count; i++)
+                {
+                    removedItems.Add(base[index + i]);
+                }
+
+                base.RemoveRange(index, count);
+            }
+
+            foreach (var item in removedItems)
+            {
+                OnRemove(item);
+            }
+        }
+
+        public new void Reverse()
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.Reverse();
+        }
+
+        public new void Reverse(int index, int count)
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.Reverse(index, count);
+        }
+
+        public new bool Contains(T item)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.Contains(item);
+        }
+
+        public new bool Exists(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.Exists(match);
+        }
+
+        public new T Find(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.Find(match);
+        }
+
+        public new List<T> FindAll(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindAll(match);
+        }
+
+        public new int FindIndex(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindIndex(match);
+        }
+
+        public new int FindIndex(int startIndex, Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindIndex(startIndex, match);
+        }
+
+        public new int FindIndex(int startIndex, int count, Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindIndex(startIndex, count, match);
+        }
+
+        public new T FindLast(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindLast(match);
+        }
+
+        public new int FindLastIndex(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindLastIndex(match);
+        }
+
+        public new List<TOutput> ConvertAll<TOutput>(Converter<T, TOutput> converter)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.ConvertAll(converter);
+        }
+
+        public new bool TrueForAll(Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.TrueForAll(match);
+        }
+
+        public new void CopyTo(T[] array, int arrayIndex)
+        {
+            using var readLock = new ReadLock(Lock);
+            base.CopyTo(array, arrayIndex);
+        }
+
+        public new List<T> GetRange(int index, int count)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.GetRange(index, count);
+        }
+
+        public new void Clear()
+        {
+            using (var writeLock = new WriteLock(Lock))
+            {
+                base.Clear();
+            }
+        }
+
+        private int InternalIndexOf(T item)
+        {
+            EnsureComparer();
+            int a = 0;
+            int b = base.Count - 1;
+
+            while (a <= b)
+            {
+                int mid = a + ((b - a) >> 1);
+                int cmp = Comparer.Compare(base[mid], item);
+
+                if (cmp == 0)
+                    return mid;
+                if (cmp < 0)
+                    a = mid + 1;
+                else
+                    b = mid - 1;
+            }
+
+            return a;
+        }
+
+        private int InternalFirstIndexOf(T item)
+        {
+            EnsureComparer();
+            int a = 0;
+            int b = base.Count - 1;
+
+            while (a <= b)
+            {
+                int mid = a + ((b - a) >> 1);
+                int cmp = Comparer.Compare(base[mid], item);
+
+                if (cmp >= 0)
+                    b = mid - 1;
+                else
+                    a = mid + 1;
+            }
+
+            if (a < base.Count && Comparer.Compare(base[a], item) == 0)
+                return a;
+
+            return -1;
+        }
+
         private int InternalIndexOfElementOrPredecessor(T item)
         {
             int index = InternalIndexOf(item);
@@ -367,7 +539,7 @@ namespace KS.Foundation
 
         public int IndexOfElementOrPredecessor(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             return InternalIndexOfElementOrPredecessor(item);
         }
 
@@ -382,52 +554,22 @@ namespace KS.Foundation
 
         public int IndexOfElementOrSuccessor(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             return InternalIndexOfElementOrSuccessor(item);
         }
 
         public T FindElementOrPredecessor(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             int index = InternalIndexOfElementOrPredecessor(item);
             return index < 0 ? default : base[index];
         }
 
         public T FindElementOrSuccessor(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             int index = InternalIndexOfElementOrSuccessor(item);
             return index >= base.Count ? default : base[index];
-        }
-
-        // Entfernt: Auskommentierte Code-Teile in InternalIndexOf.
-        private int InternalIndexOf(T item)
-        {
-            // Keine Sperre erforderlich, da dies eine interne Methode ist, die
-            // innerhalb eines WriteLock oder ReadLock aufgerufen wird.
-
-            EnsureComparer();
-
-            int a = 0;
-            int b = base.Count;
-            while (true)
-            {
-                if (a == b)
-                    return ~a;
-
-                int mid = a + ((b - a) / 2);
-                switch (Comparer.Compare(base[mid], item))
-                {
-                    case -1:
-                        a = mid + 1;
-                        break;
-                    case 1:
-                        b = mid;
-                        break;
-                    case 0:
-                        return mid;
-                }
-            }
         }
 
         /// <summary>
@@ -435,58 +577,20 @@ namespace KS.Foundation
         /// </summary>
         public new int IndexOf(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             int idx = InternalIndexOf(item);
             return (idx < 0 || idx >= base.Count) ? -1 : idx;
         }
 
-        private void EnsureComparer()
-        {
-            // Diese Methode sollte innerhalb eines Locks aufgerufen werden, wenn der Comparer geändert werden könnte.
-            // Da 'Comparer' eine protected Property ist, ist die Verwendung nur in den Read/Write Locks der 
-            // BinarySortedList selbst oder in abgeleiteten Klassen 'sicher'.
-            if (Comparer == null)
-                Comparer = Comparer<T>.Default;
-        }
-
-        private int InternalFirstIndexOf(T item)
-        {
-            // Keine Sperre erforderlich
-            EnsureComparer();
-
-            int a = 0;
-            int b = base.Count - 1;
-            while (a <= b)
-            {
-                int mid = a + ((b - a) / 2);
-                switch (Comparer.Compare(base[mid], item))
-                {
-                    case -1:
-                        a = mid + 1;
-                        break;
-                    default:
-                        b = mid - 1;
-                        break;
-                }
-            }
-
-            if (b < 0)
-                return ~(b + 1);
-            else if (a >= base.Count)
-                return ~a;
-
-            return b + 1;
-        }
-
         public int FirstIndexOf(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             return InternalFirstIndexOf(item);
         }
 
         public new int LastIndexOf(T item)
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             EnsureComparer();
 
             int a = 0;
@@ -513,11 +617,25 @@ namespace KS.Foundation
             return b;
         }
 
-        public virtual new void Clear()
+        [DebuggerStepThrough]
+        public new void ForEach(Action<T> action)
         {
-            using var writeLock = new WriteLock(RWLock);
-            base.Clear();
+            if (action == null)
+                return;
+
+            foreach (var item in ToArray())
+            {
+                action(item);
+            }
         }
+
+        private void EnsureComparer()
+        {
+            Comparer ??= Comparer<T>.Default;
+        }
+
+        public virtual void OnInsert(T elem) { }
+        public virtual void OnRemove(T elem) { }
 
         public new void Sort(IComparer<T> comparer)
         {
@@ -536,119 +654,96 @@ namespace KS.Foundation
         private void InternalNaturalMergeSort(IComparer<T> comparer)
         {
             IComparer<T> comp = comparer ?? Comparer<T>.Default;
+            if (base.Count <= 1) return;
 
-            // NaturalMergeSorter wird jetzt mit Komposition verwendet.
-            var sorter = new NaturalMergeSorter<T>();
-            T[] res = base.ToArray();
-            sorter.Sort(ref res, comp);
+            T[] array = base.ToArray();
+            NaturalMergeSorter<T>.SortArray(array, comp);
 
-            // Kopiert das sortierte Array zurück in die Basisliste
             for (int i = 0; i < base.Count; i++)
-                base[i] = res[i];
+                base[i] = array[i];
         }
 
         public new T[] ToArray()
         {
-            using var readLock = new ReadLock(RWLock);
+            using var readLock = new ReadLock(Lock);
             return base.ToArray();
         }
 
-        [DebuggerStepThrough]
-        public new void ForEach(Action<T> action)
+        public new IEnumerator<T> GetEnumerator()
         {
-            // Ersetze die fehlerhafte Enumerator-Logik durch eine einfache Enumeration
-            // des threadsicheren Arrays (wie im Original beabsichtigt).
-            if (action == null)
-                return;
-                
-            foreach (var item in ToArray()) 
-            {
-                action(item);
-            }
+            return new ThreadsafeEnumerator<T>(ToArray());
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }    
 
-        public new IEnumerator<T> GetEnumerator()
+    public static class NaturalMergeSorter<T>
+    {
+        public static void SortArray(T[] a, IComparer<T> comparer)
         {
-            // Gibt einen Enumerator über eine threadsichere Kopie des Arrays zurück
-            return new ThreadsafeEnumerator<T>(ToArray());
+            if (a == null || a.Length <= 1) return;
+            
+            int n = a.Length;
+            T[] b = new T[n];
+            IComparer<T> comp = comparer ?? Comparer<T>.Default;
+
+            bool srcInA = true;
+            while (true)
+            {
+                bool sorted = srcInA ? MergePass(a, b, comp) : MergePass(b, a, comp);
+                if (sorted) break;
+                srcInA = !srcInA;
+            }
+
+            if (!srcInA)
+                Array.Copy(b, a, n);
+        }
+
+        private static bool MergePass(T[] src, T[] dest, IComparer<T> comp)
+        {
+            int n = src.Length;
+            int i = 0, destIdx = 0;
+            int runCount = 0;
+
+            while (i < n)
+            {
+                int start1 = i;
+                while (i < n - 1 && comp.Compare(src[i], src[i + 1]) <= 0) i++;
+                i++;
+                int end1 = i;
+
+                if (i >= n)
+                {
+                    Array.Copy(src, start1, dest, destIdx, end1 - start1);
+                    runCount++;
+                    break;
+                }
+
+                int start2 = i;
+                while (i < n - 1 && comp.Compare(src[i], src[i + 1]) <= 0) i++;
+                i++;
+                int end2 = i;
+
+                MergeRuns(src, dest, start1, end1, start2, end2, destIdx, comp);
+                destIdx += (end1 - start1) + (end2 - start2);
+                runCount++;
+            }
+
+            return runCount <= 1;
+        }
+
+        private static void MergeRuns(T[] src, T[] dest, int s1, int e1, int s2, int e2, int destIdx, IComparer<T> comp)
+        {
+            int i = s1, j = s2, k = destIdx;
+            while (i < e1 && j < e2)
+            {
+                if (comp.Compare(src[i], src[j]) <= 0)
+                    dest[k++] = src[i++];
+                else
+                    dest[k++] = src[j++];
+            }
+            while (i < e1) dest[k++] = src[i++];
+            while (j < e2) dest[k++] = src[j++];
         }
     }
-
-    // *** NaturalMergeSorter und ThreadsafeEnumerator sind in Ordnung,
-    // können aber ebenfalls mit 'default' und '??' modernisiert werden ***    
-
-    public class NaturalMergeSorter<T>
-	{
-		private T[] a;
-		private T[] b;    // Hilfsarray
-		private int n;
-
-		// Verwendung des Null-Coalescing-Operators ?? im Setter ist moderner
-		private IComparer<T> comp = Comparer<T>.Default;
-
-		public void Sort(ref T[] a, IComparer<T> comparer)
-		{
-			this.a = a;
-			n = a.Length;
-			// Das Hilfsarray muss dieselbe Größe haben wie das zu sortierende Array
-			b = new T[n];
-
-			// Verwende Null-Coalescing-Operator '??'
-			comp = comparer ?? Comparer<T>.Default;
-
-			naturalmergesort();
-		}
-
-		// FEHLENDE METHODE 1: Die Haupt-Merge-Sort-Logik
-		private void naturalmergesort()
-		{
-			// Abwechselnd von a nach b und von b nach a verschmelzen
-			// Die Schleife stoppt, wenn mergeruns() true zurückgibt (Liste ist sortiert)
-			while (!mergeruns(ref a, ref b) & !mergeruns(ref b, ref a)) { }
-		}
-
-		// FEHLENDE METHODE 2: Verschiebt Runs (Teillisten) und führt das Merge durch
-		private bool mergeruns(ref T[] a, ref T[] b)
-		{
-			int i = 0, k = 0;
-			bool asc = true;
-			T x;
-
-			while (i < n)
-			{
-				k = i;                
-				do
-					x = a [i++];
-				while (i < n && comp.Compare (x, a [i]) <= 0);  // Aufsteigender Teil
-				
-				// Dies behandelt den absteigenden Teil (Merge Sort ist 'natural', da es bereits sortierte Runs nutzt)
-				while (i < n && comp.Compare(x, a[i]) >= 0) 
-					x = a[i++]; 
-					
-				merge(ref a, ref b, k, i - 1, asc);
-				asc = !asc; // Wechsel der Richtung für die nächste Zusammenführung
-			}
-			return k == 0; // k==0 bedeutet, dass es nur einen Run gab (Liste ist sortiert)
-		}
-
-		// FEHLENDE METHODE 3: Führt zwei Runs zusammen
-		private void merge(ref T[] a, ref T[] b, int lo, int hi, bool asc)
-		{
-			int k = asc ? lo : hi;
-			int c = asc ? 1 : -1; // Richtung, in die im Hilfsarray geschrieben wird
-			int i = lo, j = hi;
-
-			// Verschiebt das nächstgrößte/nächstkleinste Element in das Hilfsarray b
-			while (i <= j)
-			{                
-				if (comp.Compare(a[i], a[j]) <= 0)
-					b[k] = a[i++];
-				else
-					b[k] = a[j--];
-				k += c;
-			}
-		}
-	}
 }
