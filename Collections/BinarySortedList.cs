@@ -482,11 +482,14 @@ namespace KS.Foundation
         {
             EnsureComparer();
             int a = 0;
-            int b = base.Count - 1;
+            int b = base.Count - 1; // Unlocked Zugriff auf Basisklasse!
 
             while (a <= b)
             {
                 int mid = a + ((b - a) >> 1);
+
+                // WICHTIG: base[mid] nutzen, NICHT this[mid]!
+                // this[mid] holt sonst ein neues ReadLock -> LockRecursionException!
                 int cmp = Comparer.Compare(base[mid], item);
 
                 if (cmp == 0)
@@ -687,19 +690,33 @@ namespace KS.Foundation
             T[] b = new T[n];
             IComparer<T> comp = comparer ?? Comparer<T>.Default;
 
-            bool srcInA = true;
+            T[] src = a;
+            T[] dest = b;
+
             while (true)
             {
-                bool sorted = srcInA ? MergePass(a, b, comp) : MergePass(b, a, comp);
-                if (sorted) break;
-                srcInA = !srcInA;
-            }
+                int runCount = MergePass(src, dest, comp);
+                
+                // Wenn in dest nur noch 1 Run liegt, ist die Liste vollständig sortiert!
+                if (runCount <= 1)
+                {
+                    // Falls das Endergebnis im temporären Puffer 'dest' (b) gelandet ist,
+                    // kopieren wir es zurück in das Hauptarray 'a'
+                    if (dest != a)
+                    {
+                        Array.Copy(dest, a, n);
+                    }
+                    break;
+                }
 
-            if (!srcInA)
-                Array.Copy(b, a, n);
+                // Puffer tauschen (Ping-Pong)
+                T[] temp = src;
+                src = dest;
+                dest = temp;
+            }
         }
 
-        private static bool MergePass(T[] src, T[] dest, IComparer<T> comp)
+        private static int MergePass(T[] src, T[] dest, IComparer<T> comp)
         {
             int n = src.Length;
             int i = 0, destIdx = 0;
@@ -707,11 +724,13 @@ namespace KS.Foundation
 
             while (i < n)
             {
+                // 1. Ersten Run identifizieren
                 int start1 = i;
                 while (i < n - 1 && comp.Compare(src[i], src[i + 1]) <= 0) i++;
                 i++;
                 int end1 = i;
 
+                // Wenn kein zweiter Run mehr folgt: Rest-Run übertragen
                 if (i >= n)
                 {
                     Array.Copy(src, start1, dest, destIdx, end1 - start1);
@@ -719,17 +738,19 @@ namespace KS.Foundation
                     break;
                 }
 
+                // 2. Zweiten Run identifizieren
                 int start2 = i;
                 while (i < n - 1 && comp.Compare(src[i], src[i + 1]) <= 0) i++;
                 i++;
                 int end2 = i;
 
+                // Beide Runs zusammenführen
                 MergeRuns(src, dest, start1, end1, start2, end2, destIdx, comp);
                 destIdx += (end1 - start1) + (end2 - start2);
                 runCount++;
             }
 
-            return runCount <= 1;
+            return runCount;
         }
 
         private static void MergeRuns(T[] src, T[] dest, int s1, int e1, int s2, int e2, int destIdx, IComparer<T> comp)
