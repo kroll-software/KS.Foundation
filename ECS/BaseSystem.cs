@@ -35,8 +35,8 @@ namespace KS.Foundation.ECS {
         /// <summary>
         /// Constructor of the base system.
         /// </summary>
-        protected BaseSystem() {
-            KeyComponents = new HashSet<Type>();
+        protected BaseSystem() {            
+            KeyComponents = new ThreadSafeHashSet<Type>();
             AddKeyComponents();
         }			
 

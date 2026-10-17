@@ -15,8 +15,7 @@ namespace KS.Foundation.ECS
 		World World { get; set; }
 
 		public EntityManager(World world) {
-			World = world;
-            //entities = new HashSet<Entity>();
+			World = world;            
 			entities = new ThreadSafeDictionary<int, Entity>();
             EntityFinder = new EntityFinder(entities);
         }

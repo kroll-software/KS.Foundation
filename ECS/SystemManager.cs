@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using Pfz.Collections;
 
 namespace KS.Foundation.ECS
 {
@@ -8,13 +9,15 @@ namespace KS.Foundation.ECS
     /// Provides a collection for the systems.
     /// </summary>
     class SystemManager {		
-        readonly IDictionary<Type, SystemWrapper> wrappers;
+        //readonly IDictionary<Type, SystemWrapper> wrappers;
+        readonly ThreadSafeDictionary<Type, SystemWrapper> wrappers;
 
 		World World { get; set; }
 
 		public SystemManager(World world) {
 			World = world;
-            wrappers = new Dictionary<Type, SystemWrapper>();            
+            //wrappers = new Dictionary<Type, SystemWrapper>();            
+            wrappers = new ThreadSafeDictionary<Type, SystemWrapper>();            
         }
 
 		~SystemManager()

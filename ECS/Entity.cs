@@ -174,7 +174,7 @@ namespace KS.Foundation.ECS
 		{
 			StringBuilder sb = new StringBuilder ();
 			sb.Append ("{");
-			sb.Append ("\"$type:\":\"");
+		sb.Append ("\"$type\":\"");
 			sb.Append (typeName);
 			sb.Append ("\"");
 			foreach (var kv in components) {

@@ -74,30 +74,27 @@ namespace KS.Foundation
 		public ConsoleLogger ConsoleLogger
 		{
 			get{
-				ILogger log;
-				if (Loggers.TryGetValue (typeof(ConsoleLogger), out log))
-					return log as ConsoleLogger;
-				return null;
+				ILogger log = null;
+				lock (SyncObject) { Loggers.TryGetValue (typeof(ConsoleLogger), out log); }
+				return log as ConsoleLogger;
 			}
 		}
 
 		public EventLogger EventLogger
 		{
 			get{
-				ILogger log;
-				if (Loggers.TryGetValue (typeof(EventLogger), out log))
-					return log as EventLogger;
-				return null;
+				ILogger log = null;
+				lock (SyncObject) { Loggers.TryGetValue (typeof(EventLogger), out log); }
+				return log as EventLogger;
 			}
-		}			
+		}
 
 		public FileLogger FileLogger
 		{
 			get{
-				ILogger log;
-				if (Loggers.TryGetValue (typeof(FileLogger), out log))
-					return log as FileLogger;
-				return null;
+				ILogger log = null;
+				lock (SyncObject) { Loggers.TryGetValue (typeof(FileLogger), out log); }
+				return log as FileLogger;
 			}
 		}
 
@@ -105,7 +102,7 @@ namespace KS.Foundation
 		public int Count
 		{
 			get{
-				return Loggers.Count;
+				lock (SyncObject) { return Loggers.Count; }
 			}
 		}
 
@@ -113,7 +110,11 @@ namespace KS.Foundation
 		public LogManager()
 		{
 			Loggers = new Dictionary<Type, ILogger> ();
-			Observable = new Lazy<Observable<LogMessage>> ();
+
+			// ExecutionAndPublication: Bei parallelem Erstzugriff darf nur EIN Observable-
+			//  Instanz erzeugt werden, sonst verteilen sich Abonnenten und Absender
+			//  auf verschiedene Instanzen und Log-Nachrichten gehen still verloren.
+			Observable = new Lazy<Observable<LogMessage>> (() => new Observable<LogMessage> (), LazyThreadSafetyMode.ExecutionAndPublication);
 		}
 
 		[DebuggerNonUserCode]
@@ -121,7 +122,10 @@ namespace KS.Foundation
 		{
 			if (logger == null)
 				return;
-			Loggers.Add (logger.GetType(), logger);
+
+			lock (SyncObject) {
+				Loggers.Add (logger.GetType(), logger);
+			}
 		}
 
 		[DebuggerNonUserCode]
@@ -130,18 +134,30 @@ namespace KS.Foundation
 			if (type == null)
 				return;
 
-			ILogger logger;
-			if (Loggers.TryGetValue (type, out logger) && (logger as IDisposable) != null)
-				(logger as IDisposable).Dispose ();
-			
-			Loggers.Remove (type);
+			ILogger logger = null;
+			lock (SyncObject) {
+				if (!Loggers.TryGetValue (type, out logger)) {
+					Loggers.Remove (type);
+					return;
+				}
+				Loggers.Remove (type);
+			}
+
+			// Außerhalb des Locks freigeben: Das Logger-Dispose darf selbst wieder loggen.
+			(logger as IDisposable)?.Dispose ();
 		}
 
 		[DebuggerNonUserCode]
 		public void Clear()
 		{
-			Loggers.Values.DisposeListObjects ();
-			Loggers.Clear();
+			// Snapshot unter Lock, Freigabe AUFERHALB (Logger-Dispose darf selbst loggen).
+			ILogger[] snapshot;
+			lock (SyncObject) {
+				snapshot = Loggers.Values.ToArray ();
+				Loggers.Clear ();
+			}
+
+			snapshot.DisposeListObjects ();
 		}
 
 		[DebuggerNonUserCode]
@@ -149,25 +165,29 @@ namespace KS.Foundation
 		{
 			if (String.IsNullOrEmpty(message.Text))
 				return;
-			
+		
+			// Snapshot unter Lock: Logger können aus jedem Thread registriert/entfernt werden.
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+
 			switch (message.Level) {
 			case LogLevels.Verbose:
-				Loggers.Values.ForEach (l => l.Verbose(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Verbose(message.Text, message.Args));
 				break;
 			case LogLevels.Debug:
-				Loggers.Values.ForEach (l => l.Debug(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Debug(message.Text, message.Args));
 				break;
 			case LogLevels.Information:
-				Loggers.Values.ForEach (l => l.Information(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Information(message.Text, message.Args));
 				break;
 			case LogLevels.Error:
-				Loggers.Values.ForEach (l => l.Error(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Error(message.Text, message.Args));
 				break;
 			case LogLevels.Fatal:
-				Loggers.Values.ForEach (l => l.Fatal(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Fatal(message.Text, message.Args));
 				break;
 			case LogLevels.Warning:
-				Loggers.Values.ForEach (l => l.Warning(message.Text, message.Args));
+				snapshot.ForEach (l =>l.Warning(message.Text, message.Args));
 				break;
 			case LogLevels.None:
 				return;			
@@ -179,42 +199,55 @@ namespace KS.Foundation
 		[DebuggerNonUserCode]
 		public void Verbose(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Verbose(message, args));
+			// Snapshot unter Lock: Logger können aus jedem Thread registriert/entfernt werden.
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Verbose(message, args));
 			SendLogMessage (LogLevels.Verbose, message, args);
 		}
 
 		[DebuggerNonUserCode]
 		public void Debug(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Debug(message, args));
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Debug(message, args));
 			SendLogMessage (LogLevels.Debug, message, args);
 		}
 
 		[DebuggerNonUserCode]
 		public void Information(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Information(message, args));
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Information(message, args));
 			SendLogMessage (LogLevels.Information, message, args);
 		}
 
 		[DebuggerNonUserCode]
 		public void Warning(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Warning(message, args));
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Warning(message, args));
 			SendLogMessage (LogLevels.Warning, message, args);
 		}
 
 		[DebuggerNonUserCode]
 		public void Error(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Error(message, args));
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Error(message, args));
 			SendLogMessage (LogLevels.Error, message, args);
 		}
 
 		[DebuggerNonUserCode]
 		public void Fatal(string message, params object[] args)
 		{
-			Loggers.Values.ForEach (l => l.Fatal(message, args));
+			ILogger[] snapshot;
+			lock (SyncObject) { snapshot = Loggers.Values.ToArray (); }
+			snapshot.ForEach (l => l.Fatal(message, args));
 			SendLogMessage (LogLevels.Fatal, message, args);
 		}
 			

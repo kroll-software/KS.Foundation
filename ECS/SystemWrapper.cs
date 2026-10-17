@@ -6,11 +6,11 @@ namespace KS.Foundation.ECS
 {    
     class SystemWrapper {
         public BaseSystem System { get; private set; }
-        readonly HashSet<Entity> entities;
+        readonly ThreadSafeHashSet<Entity> entities;
         
 		public SystemWrapper(BaseSystem system) {
             System = system;
-			entities = new HashSet<Entity>();
+			entities = new ThreadSafeHashSet<Entity>();
         }
 
         public void Update(double elapsedMs) {
@@ -65,6 +65,15 @@ namespace KS.Foundation.ECS
 
 		public void ClearData()
 		{
+			// ★47 — Stale-Tracking-Entries freigeben: Entity.Equals/GetHashCode ist
+			// ID-basiert und World.ClearData() setzt die ID-Auto-Nummerung zurück
+			// (Entity.ResetAutoNumber) → neue Entities bekommen WIEDER die alten IDs.
+			// Ohne dieses entities.Clear() klassifiziert UpdateEntityValidity()
+			// jede neue Entity als "bekannt" (Contains → true) und ruft
+			// System.EntityAdded() NIE auf → Key-Index (ResolveItem) bleibt leer,
+			// Relationen werden nicht gerendert, neu erzeugte Tasks (250 Sample)
+			// funktionieren nach "Neu" nicht. (Hermes-Diagnose 12.10.2026)
+			entities.Clear ();
 			System.Clear ();
 		}
     }

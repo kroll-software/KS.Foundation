@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Runtime.Serialization;
 using System.Threading;
@@ -33,7 +34,7 @@ namespace KS.Foundation
         public void Dispose() => _rwLock?.ExitWriteLock();
     }
 
-    public class BinarySortedList<T> : List<T>, IEnumerable<T>
+    public class BinarySortedList<T> : List<T>, IList<T>, ICollection<T>, IReadOnlyCollection<T>, IReadOnlyList<T>, IEnumerable<T>, IList, ICollection
     {
         [NonSerialized]
         private ReaderWriterLockSlim _lock = new(LockRecursionPolicy.SupportsRecursion);
@@ -478,6 +479,185 @@ namespace KS.Foundation
             }
         }
 
+        // =============================================================
+        // Vollständige List<T>-API-Abdeckung (net10-Oberfläche),
+        // jede Methode mit RW-Lock, damit kein Pfad ungesichert bleibt.
+        // =============================================================
+
+        public new int Capacity
+        {
+            get
+            {
+                using var readLock = new ReadLock(Lock);
+                return base.Capacity;
+            }
+            set
+            {
+                using var writeLock = new WriteLock(Lock);
+                base.Capacity = value;
+            }
+        }
+
+        // Diese Collection ist schreibbar.
+        public bool IsReadOnly => false;
+
+        // Die Collection wird durch das RW-Lock synchronisiert.
+        public bool IsSynchronized => true;
+
+        // Synchronobjekt dieser Collection: das RW-Lock selbst.
+        public object SyncRoot => Lock;
+
+        public new void CopyTo(T[] array)
+        {
+            using var readLock = new ReadLock(Lock);
+            base.CopyTo(array, 0);
+        }
+
+        // CopyTo mit Quellindex (net10-List<T>-Signatur: index zuerst, dann
+        // Ziel-Array/-Index/-Anzahl), per RW-Lock abgesichert.
+        public new void CopyTo(int index, T[] array, int arrayIndex, int count)
+        {
+            using var readLock = new ReadLock(Lock);
+            base.CopyTo(index, array, arrayIndex, count);
+        }
+
+        // Index-Suchvarianten: net10-List<T>-Signatur hat das Element ERST
+        // (IndexOf(T item, int index[, int count])) — nicht (int, T) wie in
+        // früheren Frameworks. Hier per RW-Lock abgesichert.
+        public new int IndexOf(T item, int startIndex)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.IndexOf(item, startIndex);
+        }
+
+        public new int IndexOf(T item, int startIndex, int count)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.IndexOf(item, startIndex, count);
+        }
+
+        public new int LastIndexOf(T item, int startIndex)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.LastIndexOf(item, startIndex);
+        }
+
+        public new int LastIndexOf(T item, int startIndex, int count)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.LastIndexOf(item, startIndex, count);
+        }
+
+        public new int EnsureCapacity(int capacity)
+        {
+            using var writeLock = new WriteLock(Lock);
+            return base.EnsureCapacity(capacity);
+        }
+
+        public new void TrimExcess()
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.TrimExcess();
+        }
+
+        /// <summary>
+        /// Binärsuche in der sortierten Liste (Basissemantik).
+        /// </summary>
+        public new int BinarySearch(T item)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.BinarySearch(item);
+        }
+
+        public new int BinarySearch(T item, IComparer<T> comparer)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.BinarySearch(item, comparer);
+        }
+
+        public new int BinarySearch(int index, int count, T item, IComparer<T> comparer)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.BinarySearch(index, count, item, comparer);
+        }
+
+        public new void Sort()
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.Sort();
+        }
+
+        public new void Sort(int index, int count, IComparer<T> comparer)
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.Sort(index, count, comparer);
+        }
+
+        public new void Sort(Comparison<T> comparison)
+        {
+            using var writeLock = new WriteLock(Lock);
+            base.Sort(comparison);
+        }
+
+        // Index-Suchvarianten: List<T> definiert dafür (abseits LastIndexOf(T))
+        // keine Startindex-Überladungen; FindIndex/FindLastIndex (unten) sind
+        // die entsprechenden, abgesicherten Suchpfade.
+
+        public new int FindLastIndex(int startIndex, Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindLastIndex(startIndex, match);
+        }
+
+        public new int FindLastIndex(int startIndex, int count, Predicate<T> match)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.FindLastIndex(startIndex, count, match);
+        }
+
+        /// <summary>
+        /// Neue Liste mit einem Abschnitt dieser Liste (Schnappschuss, net10).
+        /// </summary>
+        public new List<T> Slice(int startIndex, int count)
+        {
+            using var readLock = new ReadLock(Lock);
+            return base.Slice(startIndex, count);
+        }
+
+        /// <summary>
+        /// Einfügen eines Abschnitts an der angegebenen Position (Basissemantik, nicht sortierend).
+        /// </summary>
+        public new void InsertRange(int index, IEnumerable<T> collection)
+        {
+            if (collection == null)
+                throw new ArgumentNullException(nameof(collection));
+
+            List<T> insertedItems = new List<T>();
+            using (var writeLock = new WriteLock(Lock))
+            {
+                foreach (var elem in collection)
+                {
+                    base.Insert(index + insertedItems.Count, elem);
+                    insertedItems.Add(elem);
+                }
+            }
+
+            foreach (var item in insertedItems)
+            {
+                OnInsert(item);
+            }
+        }
+
+        /// <summary>
+        /// Lese-only-Ansicht basierend auf einem Schnappschuss (keine Live-Referenz
+        /// auf den internen Speicher, dadurch thread-sicher).
+        /// </summary>
+        public new ReadOnlyCollection<T> AsReadOnly()
+        {
+            using var readLock = new ReadLock(Lock);
+            return new ReadOnlyCollection<T>(base.ToArray());
+        }
+
         private int InternalIndexOf(T item)
         {
             EnsureComparer();
@@ -500,7 +680,10 @@ namespace KS.Foundation
                     b = mid - 1;
             }
 
-            return a;
+            // Nicht gefunden: Einfeld-Konvention (~Einfügeposition) zurückgeben.
+            // Alle Caller (Add, AddOrUpdate, IndexOf, Predecessor/Successor)
+            // erwarten das Bit-Complement und rechnen damit: if (index < 0) index = ~index;
+            return ~a;
         }
 
         private int InternalFirstIndexOf(T item)
@@ -596,28 +779,32 @@ namespace KS.Foundation
             using var readLock = new ReadLock(Lock);
             EnsureComparer();
 
+            // Binärsuche nach dem RECHTS­TEN Element, das mit item vergleichsgleich ist.
+            // Liefert den Index oder -1 (Doku-Kontrakt), unabhängig davon,
+            // welche Werte (außer ±0) der Comparer zurückgibt.
+            int lastFound = -1;
             int a = 0;
             int b = base.Count - 1;
             while (a <= b)
             {
                 int mid = a + ((b - a) / 2);
-                switch (Comparer.Compare(base[mid], item))
+                int cmp = Comparer.Compare(base[mid], item);
+                if (cmp == 0)
                 {
-                    case 1:
-                        b = mid - 1;
-                        break;
-                    default:
-                        a = mid + 1;
-                        break;
+                    lastFound = mid;
+                    a = mid + 1; // möglicherweise gibt es rechts noch gleiche
+                }
+                else if (cmp < 0)
+                {
+                    a = mid + 1;
+                }
+                else
+                {
+                    b = mid - 1;
                 }
             }
 
-            if (b < 0)
-                return ~(b + 1);
-            else if (a > b)
-                return ~a;
-
-            return b;
+            return lastFound;
         }
 
         [DebuggerStepThrough]
@@ -678,7 +865,92 @@ namespace KS.Foundation
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-    }    
+
+        // =================================================================
+        // =================================================================
+        // Interface-Abdeckung (net10-Oberfläche)
+        //
+        // Generische Interfaces (IList<T>, ICollection<T>, IReadOnlyList<T>,
+        // IReadOnlyCollection<T>, IEnumerable<T>): List<T> implementiert deren
+        // Member implizit über öffentliche Methoden. Unsere eigenen public
+        // locked-Member (this[index], Count, IndexOf, Insert, Remove, Clear,
+        // Add, Contains, CopyTo, Sort, BinarySearch, ...) erfüllen die
+        // Interface-Kontrakte dadurch automatisch und überschatten die
+        // Basisversionen — jeder generische Interface-Aufruf läuft thus gesichert.
+        //
+        // Unspezifizierte IList / ICollection: List<T> implementiert deren
+        // Member (Add(object), Remove(object), this[int], CopyTo(Array), ...,
+        // GetEnumerator) explizit, und die in List<T> kompilierten Aufrufe
+        // bleiben beim Basispfad — sie lassen sich von einer abgeleiteten
+        // Klasse nicht umleiten (CS0539/CS0111, empirisch verifiziert).
+        // BESCHRÄNKUNG: Aufrufe über unspezifizierte IList-/ICollection-
+        // Referenzen sind nicht durch das RW-Lock abgesichert.
+        // In multithreaded Kontexten bitte die konkrete Type oder IList<T>/
+        // IReadOnlyList<T> verwenden — beide sind vollständig abgesichert.
+        // Die folgenden public object-Overloads funktionieren bei direktem
+        // Aufruf (konkret oder via Reflection) korrekt mit Lock.
+        // =================================================================
+
+        // ICollection<T>.Remove (bool) explizit verankern.
+        bool ICollection<T>.Remove(T item) => Remove(item);
+
+        // Object-Overloads (direkter Aufruf, mit Lock):
+        public void Add(object value) => Add((T)value);
+        public bool Contains(object value) => Contains((T)value);
+        public int IndexOf(object value) => IndexOf((T)value);
+        public int LastIndexOf(object value) => LastIndexOf((T)value);
+        public void Insert(int index, object value) => Insert(index, (T)value);
+        public void Remove(object value) => Remove((T)value);
+
+        // ---- unspezifierte ICollection ----
+        // CopyTo(Array) wird von List<T> implementiert und kann nicht explizit
+        // neu implementiert werden (CS0539) — daher als public-Methode, die die
+        // Interface-Anforderung per Signatur erfüllt.
+        public void CopyTo(Array array, int index)
+        {
+            if (array == null)
+                throw new ArgumentNullException(nameof(array));
+            if (array.Rank > 1)
+                throw new ArgumentException("Array muss eindimensional sein", nameof(array));
+            if (index < 0 || array.Length - index < Count)
+                throw new ArgumentException("Index außerhalb des Ziels", nameof(index));
+
+            T[] typedArray = array as T[];
+            if (typedArray != null)
+            {
+                CopyTo(typedArray, index);
+                return;
+            }
+
+            using var readLock = new ReadLock(Lock);
+            for (int i = 0; i < base.Count; i++)
+                array.SetValue(base[i], index + i);
+        }
+
+        public void CopyTo(Array array)
+        {
+            if (array == null)
+                throw new ArgumentNullException(nameof(array));
+            if (array.Rank > 1)
+                throw new ArgumentException("Array muss eindimensional sein", nameof(array));
+            if (array.Length < Count)
+                throw new ArgumentException("Array ist zu klein", nameof(array));
+
+            T[] typedArray = array as T[];
+            if (typedArray != null)
+            {
+                CopyTo(typedArray);
+                return;
+            }
+
+            using var readLock = new ReadLock(Lock);
+            for (int i = 0; i < base.Count; i++)
+                array.SetValue(base[i], i);
+        }
+
+        bool ICollection.IsSynchronized => IsSynchronized;
+        object ICollection.SyncRoot => SyncRoot;
+    }
 
     public static class NaturalMergeSorter<T>
     {

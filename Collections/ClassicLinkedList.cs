@@ -99,11 +99,15 @@ namespace KS.Foundation
 				return m_Head;
 			}
 			set {
+				// Externe Neu-Verlinkung invalidiert den Tail-Zeiger (AddLast heilt ihn einmalig neu auf)
+				if (value != m_Head)
+					m_Tail = null;
 				Concurrency.LockFreeUpdate (ref m_Head, value);
 			}
 		}
 
 		private Node m_Current;
+		private Node m_Tail;  // authoritative Tail-Pointer (== letzter Knoten der Live-Kette); bei jedem Structural-Op gepflegt, macht AddLast immun gegen stale Current
 		public Node Current 
 		{ 
 			get {
@@ -147,11 +151,13 @@ namespace KS.Foundation
 			{				
 				m_Head = node;
 				Current = Head;			
+				Count = 1;
 				while (Current.Next != null) 
 				{
 					Current = Current.Next;
 					Count++;
 				}
+				m_Tail = Current;
 			}
 		}
 
@@ -230,7 +236,8 @@ namespace KS.Foundation
 			Node curr = Head;
 			while (curr != null) 
 			{
-				if (curr.Value.Equals (value))
+				// Null-sicher: Null-Werte in der Kette dürfen keinen NRE werfen
+				if ((curr.Value is null && value is null) || (curr.Value is not null && curr.Value.Equals (value)))
 					return curr;
 				curr = curr.Next;
 			}
@@ -278,7 +285,9 @@ namespace KS.Foundation
 		}
 
 		/// <summary>
-		/// Find the specified value in a sorted list
+		/// Find the specified value in a sorted list.
+		/// Semantik: liefert das Element selbst, falls vorhanden, andernfalls
+		/// den ERSTEN Knoten mit Wert &gt;= Ziel (Successor). null = kein Knoten gefunden.
 		/// </summary>
 		/// <param name="value">Value.</param>
 		public Node Find(T value)
@@ -292,8 +301,6 @@ namespace KS.Foundation
 				if (p == null)
 					return null;
 			}
-			if (Comparer.Compare (p.Value, value) == 0)
-				return p;
 			return p;
 		}
 
@@ -304,7 +311,11 @@ namespace KS.Foundation
 			lock (SyncObject)
 			{
 				// Einfache, direkte Zeiger-Zuweisung – das Lock garantiert die Exklusivität unter Writern
-				Head = new Node(value, Head);
+				// (Raw-Feld: der Head-Setter würde m_Tail invalidieren; der Tail ist hier sonst unverändert)
+				Node newNode = new Node(value, Head);
+				m_Head = newNode;
+				if (m_Tail == null)
+					m_Tail = newNode;
 
 				if (Current == null)
 					Current = Head;
@@ -320,29 +331,33 @@ namespace KS.Foundation
 		{
 			lock (SyncObject)
 			{
-				Node newNode = new Node(value);
-
+				CheckComparer();
 				if (Head == null)
 				{
-					Head = newNode;
-					Current = newNode;
-					m_Count = 1;
+					AddFirst (value);
+					return;
 				}
-				else
+
+				Node newNode = new Node (value);
+
+				// Autoritativer Tail via m_Tail — O(1) und strukturell immun gegen
+				// stale/extern gesetzte Current-Pointer (würden sonst an eine getrennte
+				// Kette anhängen und das Element "verlieren"). Selbstheilend: falls
+				// m_Tail invalidiert wurde (z.B. externe Head-Neupflege), wird er
+				// einmalig neu aufgebaut, danach wieder O(1).
+				Node tail = m_Tail;
+				if (tail == null)
 				{
-					// Wenn Current nicht am Ende steht, einmal schnell ans Ende springen
-					if (Current == null || Current.Next != null)
-					{
-						CheckCurrent();
-					}
-
-					// O(1) Anfügen direkt über Current/Tail!
-					Current.Next = newNode;
-					Current = newNode;
-					Interlocked.Increment(ref m_Count);
+					tail = Head;
+					while (tail.Next != null)
+						tail = tail.Next;
+					m_Tail = tail;
 				}
-
-				OnInsert(value);
+				tail.Next = newNode;
+				m_Tail = newNode;
+				Current = newNode;
+				Interlocked.Increment(ref m_Count);
+				OnInsert (value);
 			}
 		}
 
@@ -396,6 +411,8 @@ namespace KS.Foundation
 				Node curr = new Node(value, next); // Vollständig initialisiert
 				prev.Next = curr;
 
+				if (prev == m_Tail)
+					m_Tail = curr;
 				if (prev == Current)
 					Current = curr;
 
@@ -427,6 +444,8 @@ namespace KS.Foundation
 					Node newNode = new Node(value, next); // Vollständig initialisiert
 					prev.Next = newNode;
 
+					if (prev == m_Tail)
+						m_Tail = newNode;
 					if (prev == Current)
 						Current = newNode;
 
@@ -450,6 +469,8 @@ namespace KS.Foundation
 				Node curr = new Node(value, next); // Vollständig initialisiert
 				prev.Next = curr;
 
+				if (prev == m_Tail)
+					m_Tail = curr;
 				if (prev == Current)
 					Current = curr;
 
@@ -486,6 +507,18 @@ namespace KS.Foundation
 					AddFirst (value);
 					return true;
 				}
+				// prev ist das letzte Element <= value. Ist es GLEICH, existiert der Wert
+				// bereits in der Liste: allowDupes=false muss ablehnen (Defekt D8 — die
+				// frühere Prüfung erkannte Duplikate nur im Tail-Fall). Erlaubt: direkt
+				// nach dem letzten Gleich-Knoten einfügen.
+				if (Comparer.Compare (prev.Value, value) == 0)
+				{
+					if (!allowDupes)
+						return false;
+					InsertAfter (prev, value);
+					return true;
+				}
+
 				if (prev.Next == null) {
 					AddLast (value);
 					return true;
@@ -605,9 +638,12 @@ namespace KS.Foundation
 						prevY.Next = currX;
 					else
 						Head = currX;
-				}
-			}
-		}
+					}
+
+					// Der Swap kann den Tail gewechselt haben -> Tail neu ermitteln (setzt auch Current)
+					RetainTail();
+					}
+					}
 
 		// *** Removing Items ***
 
@@ -641,6 +677,8 @@ namespace KS.Foundation
 
 					// Atomarer Switch: Vorgänger überspringt den Zielknoten
 					prev.Next = target.Next;
+					if (target == m_Tail)
+						m_Tail = prev;
 
 					// Falls der gelöschte Knoten das Ende der Liste war (oder Current)
 					if (target == Current || prev.Next == null)
@@ -687,6 +725,7 @@ namespace KS.Foundation
 				// Letzten Knoten abkoppeln
 				prev.Next = null;
 				Current = prev;
+				m_Tail = prev;
 
 				Interlocked.Decrement(ref m_Count);
 				OnRemove(lastValue);
@@ -719,6 +758,8 @@ namespace KS.Foundation
 					{
 						// Atomarer Switch: Vorgänger zeigt sofort auf den Nachfolger
 						prev.Next = curr.Next;
+						if (curr == m_Tail)
+							m_Tail = prev;
 
 						// Falls der gelöschte Knoten das Listenende war, Current anpassen
 						if (curr == Current || prev.Next == null)
@@ -759,6 +800,8 @@ namespace KS.Foundation
 
 						// Atomarer Switch: Vorgänger überspringt curr
 						prev.Next = curr.Next;
+						if (curr == m_Tail)
+							m_Tail = prev;
 
 						// Falls der gelöschte Knoten am Ende stand, Current auf prev zurücksetzen
 						if (curr == Current || prev.Next == null)
@@ -795,7 +838,8 @@ namespace KS.Foundation
 				else
 				{
 					// Atomar den Head auf das nächste Element verschieben
-					Head = oldHead.Next;
+					// (Raw-Feld: der Head-Setter würde m_Tail invalidieren, der Tail ist hier aber unverändert)
+					m_Head = oldHead.Next;
 					Interlocked.Decrement(ref m_Count);
 				}
 
@@ -816,9 +860,10 @@ namespace KS.Foundation
 				// 1. Erst den Head bereinigen, falls er im Bereich liegt
 				while (Head != null && Comparer.Compare(Head.Value, low) >= 0 && Comparer.Compare(Head.Value, high) <= 0)
 				{
+					T removedVal = Head.Value;
 					Head = Head.Next;
 					Interlocked.Decrement(ref m_Count);
-					OnRemove(Head != null ? Head.Value : default);
+					OnRemove(removedVal);
 				}
 
 				if (Head == null)
@@ -846,7 +891,7 @@ namespace KS.Foundation
 					deleteNode = deleteNode.Next;
 				}
 
-				CheckCurrent(true);
+				RetainTail();
 			}
 		}
 
@@ -884,7 +929,7 @@ namespace KS.Foundation
 						OnRemove(removedVal);
 						removed++;
 					}
-					CheckCurrent(true);
+					RetainTail();
 					return removed;
 				}
 
@@ -910,7 +955,7 @@ namespace KS.Foundation
 				// Ausgeklinkten Teil überspringen
 				prev.Next = curr;
 
-				CheckCurrent(true);
+				RetainTail();
 				return countRemoved;
 			}
 		}
@@ -921,13 +966,21 @@ namespace KS.Foundation
 			{
 				Head = null;				
 				Current = null;
+				m_Tail = null;
 				Interlocked.Exchange(ref m_Count, 0);
 			}
 		}
 
 		public void ClearAndDisposeItems()
 		{
-			Node curr = Head;
+			// Schnappschuss UNTER dem Lock ziehen (sonst rächt sich ein Race-Fenster:
+			// zwischen Head-Read und Clear() neu hinzugefügte Knoten würden nie disposed)
+			Node curr;
+			lock (SyncObject)
+			{
+				curr = Head;
+			}
+
 			Clear ();
 			while (curr != null) 
 			{
@@ -956,6 +1009,7 @@ namespace KS.Foundation
 				}
 
 				Current = curr;
+				m_Tail = curr;
 				Interlocked.Exchange(ref m_Count, count);
 			}
 		}
@@ -994,6 +1048,28 @@ namespace KS.Foundation
 			Current = null;
 		}
 
+		/// <summary>
+		/// Ermittelt den wahren Tail der Kette (von Head aus), setzt Current UND m_Tail.
+		/// VORAUSSETZUNG: wird nur unter dem SyncObject-Lock aufgerufen.
+		/// Dient am Ende von Structural-Ops, in denen der Tail gewechselt sein kann.
+		/// </summary>
+		private void RetainTail()
+		{
+			Node curr = Head;
+			if (curr is null)
+			{
+				m_Tail = null;
+				Current = null;
+				return;
+			}
+
+			while (curr.Next is not null)
+				curr = curr.Next;
+
+			m_Tail = curr;
+			Current = curr;
+		}
+
 
 		// *** Enumerate Items ***
 
@@ -1002,15 +1078,23 @@ namespace KS.Foundation
 			return GetEnumerator();
 		}
 
+		/// <summary>
+		/// Thread-sichere Enumerierung: die Werte werden UNTER dem Lock in einen Snapshot
+		/// kopiert. Ein Live-Walk über node.Next wäre während paralleler Writes ein zerissener
+		/// Pointergraph (Defekt D7). Semantik: Zustandsabbild zum Zeitpunkt des Beginns.
+		/// </summary>
 		public IEnumerator<T> GetEnumerator()
-		{			
-			var node = Head;
-			while(node != null)
+		{
+			List<T> snapshot;
+			lock (SyncObject)
 			{
-				//i++;
-				yield return node.Value;
-				node = node.Next;
+				snapshot = new List<T>(Count);
+				for (var node = Head; node != null; node = node.Next)
+					snapshot.Add(node.Value);
 			}
+
+			foreach (var value in snapshot)
+				yield return value;
 		}
 
 		// *** Sorting ***
@@ -1051,8 +1135,8 @@ namespace KS.Foundation
 				// Atomares Zuweisen an die Instanz
 				Head = sortedHead;
 
-				// Current ans Ende der neuen Kette setzen
-				CheckCurrent(reset: true);
+				// Current ans Ende der neuen Kette setzen (und Tail-Zeiger)
+				RetainTail();
 			}
 		}
 

@@ -20,9 +20,12 @@ namespace KS.Foundation
         {
             get
             {
-                // Wenn der Enumerator vor dem ersten Element (-1) oder nach dem letzten Element (>= _size) steht,
-                // sollte eine InvalidOperationException ausgelöst werden (Standard-Konvention),
-                // aber da der ursprüngliche Code dies nicht tat, belassen wir den direkten Zugriff.
+                // Konvention: Current ist nur gültig, wenn MoveNext() zuvor
+                // true zurückgegeben hat. Davor (Index -1) und danach
+                // (Index >= _size) muss eine InvalidOperationException geworfen
+                // werden (vorher: IndexOutOfRangeException bei _buffer[-1]).
+                if (_index < 0 || _index >= _size)
+                    throw new InvalidOperationException("Enumerator is not positioned on an element.");
                 return _buffer[_index];
             }
         }

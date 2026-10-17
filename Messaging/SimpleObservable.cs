@@ -313,18 +313,53 @@ namespace KS.Foundation
 
 		readonly BlockingQueue<T> MessageQueue;
 
+		private int m_IsProcessing = 0; // 0 = idle, 1 = Worker aktiv
+
 		public void OnNext(T value)
-		{
+		{		
 			if (!IsDisposed && OnNextAction != null) {
 				if (MessageQueue.Enqueue (value)) {
-					Task.Run ((() => {
-						T v;
-						while (MessageQueue.Dequeue (out v)) {
-							OnNextAction (v);
-						}
-					}));
+					// Genau EIN Worker leert die Queue: Reihenfolge bleibt gewahrt
+					//  und es wächst keine Thread-Armee (ein Worker pro Nachricht) auf.
+					if (Interlocked.CompareExchange (ref m_IsProcessing, 1, 0) == 0) {
+						Task.Run (ProcessQueue);
+					}
 				} else {
 					this.LogWarning ("Message was not enqueued !");
+				}
+			}
+		}
+
+		private void ProcessQueue()
+		{
+			try {
+				T v;
+				while (true) {
+					// Timeout-Dequeue, damit der Worker bei Leerlauf sauber beendet
+					//  wird und sein Flag zurücksetzt (kein dauerhaft blockierter Thread).
+					if (!MessageQueue.TryDequeue (out v, 200)) {
+						if (IsDisposed || MessageQueue.Count == 0)
+							break;
+						continue;
+					}
+
+					if (IsDisposed)
+						break;
+
+					try {
+						OnNextAction (v);
+					} catch (Exception ex) {
+						ex.LogError ();
+					}
+				}
+			} finally {
+				Interlocked.Exchange (ref m_IsProcessing, 0);
+
+				// Edge-Case: Ein Element ist zwischen letztem Dequeue und Flag-Reset
+				//  eingetroffen -> Worker neu starten.
+				if (!IsDisposed && MessageQueue.Count > 0 &&
+					Interlocked.CompareExchange (ref m_IsProcessing, 1, 0) == 0) {
+					Task.Run (ProcessQueue);
 				}
 			}
 		}
@@ -340,11 +375,21 @@ namespace KS.Foundation
 		public void OnCompleted()
 		{
 			if (!IsDisposed && OnCompletedAction != null) {					
-				T v;
-				while (MessageQueue.Dequeue(out v)) {
-					OnNextAction(v);
-				}
-				OnCompletedAction ();
+				// OnCompletedAction feuert erst NACH den verbleibenden Nachrichten —
+				//  im bestehenden Worker-Kontext, nie parallel, nie am rufenden Thread.
+				Task.Run (() => {
+					int guard = 0;
+					while (!IsDisposed && (MessageQueue.Count > 0 || Volatile.Read (ref m_IsProcessing) == 1)) {
+						if (++guard > 30000)
+							break; // ~30s Sicherheitsbremse
+						Thread.Sleep (1);
+					}
+					try {
+						OnCompletedAction ();
+					} catch (Exception ex) {
+						ex.LogError ();
+					}
+				});
 			}
 		}
 
@@ -539,7 +584,15 @@ namespace KS.Foundation
 		{
 			try {
 				T v;
-				while (MessageQueue.Dequeue(out v)) {
+				while (true) {
+					// Timeout-Dequeue: Der Worker beendet sich bei Leerlauf sauber
+					//  und setzt sein Flag zurueck (kein dauerhaft haeufiger blockierter Thread).
+					if (!MessageQueue.TryDequeue(out v, 200)) {
+						if (IsDisposed || MessageQueue.Count == 0)
+							break;
+						continue;
+					}
+					
 					if (IsDisposed) break;
 					try {
 						OnNextAction?.Invoke(v);
@@ -565,9 +618,15 @@ namespace KS.Foundation
 		{
 			if (OnCompletedAction != null && !IsDisposed) {
 				// Wenn noch ein Worker läuft, warten wir kurz im Task, 
-				// damit OnCompletedAction ERST NACH den verbleibenden Nachrichten feuert
+				// OnCompletedAction feuert erst NACH den verbleibenden Nachrichten:
+				//  warten, bis der laufende Worker fertig ist - nie parallel dazu.
 				Task.Run(() => {
-					ProcessQueue(); // Abarbeiten der Rest-Queue
+					int guard = 0;
+					while (!IsDisposed && (MessageQueue.Count > 0 || Volatile.Read(ref m_IsProcessing) == 1)) {
+						if (++guard > 30000)
+							break; // ~30s Sicherheitsbremse
+						Thread.Sleep(1);
+					}
 					try {
 						OnCompletedAction?.Invoke();
 					} catch (Exception ex) {
