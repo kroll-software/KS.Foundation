@@ -23,7 +23,13 @@ namespace KS.Foundation.ECS
 			// ToDo: Double check what's required of those
 			if (entities.Contains(entity) || !entity.BelongsTo(System))
                 return;
-            entities.Add(entity);
+            // ★50: HashSet.Add liefert false, wenn das Element bereits drin ist
+            // (WriteLock-gesichert, thread-sicher). Vorher wurde Contains/Add
+            // getrennt geprüft → TOCTOU: zwei parallele Adds → beide liefen
+            // EntityAdded (Count++) ab, aber RemoveEntity zählt nur einmal
+            // hoch → Phantom-Count (Stress-S04: Logic.Count=1).
+            if (!entities.Add(entity))
+                return;
             System.EntityAdded(entity);
         }
 

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace KS.Foundation.ECS {
 
@@ -95,9 +96,15 @@ namespace KS.Foundation.ECS {
         /// Methods that gets called when the system adds an entity.
         /// </summary>
         /// <param name="entity"> The entity that got added. </param>
-        protected internal virtual void EntityAdded(IEntity entity) { Count++; }
+        protected internal virtual void EntityAdded(IEntity entity) { Interlocked.Increment(ref _count); }
 
-        public int Count { get; private set; }
+        // ★50 (24.10.2026): Count jetzt thread-sicher (Interlocked).
+        // Vorher: Auto-Property (plainer int) — EntityAdded/EntityRemoved liefen
+        // von mehreren Threads (Creator/Remover/ComponentChanged) → read-modify-
+        // write Races → verlorene Updates (Stress-S07: Count 29998 statt 30000;
+        // S08: Count -239). Public-API bleibt int Count { get; }.
+        private int _count;
+        public int Count { get { return _count; } }
 
 		protected internal virtual void RemovingEntity(IEntity entity) {}
 
@@ -105,7 +112,7 @@ namespace KS.Foundation.ECS {
         /// Method that gets called when the system removes an entity.
         /// </summary>
         /// <param name="entity">The entity that got removed.</param>
-        protected internal virtual void EntityRemoved(IEntity entity) {Count--;}
-		protected internal virtual void Clear () {Count = 0;}
+        protected internal virtual void EntityRemoved(IEntity entity) {Interlocked.Decrement(ref _count);}
+		protected internal virtual void Clear () { Interlocked.Exchange(ref _count, 0); }
     }
 }

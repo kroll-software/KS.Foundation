@@ -1,0 +1,273 @@
+Stresstests der Observable-Klassen in KS.Foundation
+workspace/OpenSource2026/KS.Foundation/
+
+Die BlockingQueue-Klassen nicht anfassen.
+Die Observable/Observer stehen im Verdacht für Deadlocks.
+
+Vorerst nur Analyse mit mehreren Threads.
+
++++
+
+Ich habe dir eine ältere Version hingelegt
+KS.Foundation_4-26
+
+Bitte dieselben Tests kurz mit der älteren Version.
+
++++
+
+Fertig — dieselben 10 Szenarien gegen KS.Foundation_4-26 (net8.0) gelaufen, Build grün, Projekt liegt in ObservableStress_Old/. Beide Versionen sind unter Last liveness-unsicher, aber anders:
+
+Ergebnis
+
+| Szenario                      | ALT (4/26)                                                     | NEU                                                |
+|-------------------------------|----------------------------------------------------------------|----------------------------------------------------|
+| S01 basic-flood               | ok                                                             | ok                                                 |
+| S02 queued-flood              | Verlust: nur 64/6000 in 30 s, Rest still per Clear() verworfen | ok                                                 |
+| S03 churn-dispose             | ok                                                             | ok (4.513 verwaiste Objekte)                       |
+| S04 multi-flood+Churn         | ok                                                             | UNGEPLANTER HANG (Lost-Wakeup: Flag=1 ohne Worker) |
+| S05 qmulti-flood              | ok (7–11/4800 vor OnCompleted)                                 | ok / intermittierender Hang                        |
+| S06 oncompleted-order         | UNGEPLANTER HANG (dump-belegt, 1.76 GB)                        | ok                                                 |
+| S07 dispose-during-dispatch   | ok                                                             | ok                                                 |
+| S08 observer-resubscribe      | LEAK (belegt)                                                  | LEAK (belegt)                                      |
+| S09 DL voller Puffer          | keine Replikation (Army absorbiert)                            | Deterministischer Deadlock                         |
+| S10 reentrante Selbst-Enqueue | Kette bricht nach 2                                            | Livelock                                           |
+
+Alt-Befunde (dump-belegt)
+
+S06 — Deterministischer Deadlock + 181 Thread-Leaks: Die alte QueuedObserver startet pro Message einen Drain-Task (Thread-Armee). SendCompleted → OnCompleted drainet inline im Aufrufer-Thread mit while (Dequeue) — ohne Ende-Kondition. Wenn die Queue leer ist (Army hat sie entleert) und m_IsQuit=false, blockieren alle 182 Threads (181 Army + 1 Aufrufer) ewig in BlockingQueue.Dequeue → Monitor.Wait. Stack im Dump:
+
+Monitor.Wait → BlockingQueue.Dequeue (BlockingQueue.cs @ 127)
+→ QueuedObserver.OnCompleted (SimpleObservable.cs @ 332)
+→ Observable.SendCompleted (SimpleObservable.cs @ 140)
+→ Scenarios.OnCompletedOrder (Scenarios.cs @ 283)
+
+
+S02 — Throughput-Kollaps der Army: 64/6000 in 30 s ≈ 2/s. Ursache: jeder Enqueue weckt per PulseAll alle ~180+ auf demselben Monitor wartenden Army-Threads → Monitor-Kavaleade; pro Item hunderte wecke/Context-Switches. Bei Dispose wird der Backlog per Clear() still verworfen (Datenverlust ohne Hinweis).
+
+S08 — Gleicher Ref-Leak wie neu: Subscribe überschreibt m_Unsubscriber ohne Dispose. Der Leck-Defekt ist also alt — nie behoben. Die neue Worker-Architektur löst S06/S02, aber bringt S04/S09/S10 mit.
+
+Gemeinsamer Mangel (beide Versionen)
+- Enqueue(Timeout.Infinite) ohne konfigurierbare Backpressure-Politik.
+- Clear() bei Unsubscribe/Dispose verwirft Backlog still.
+- Aboschicht: nicht-aufgeräumte Referenz (S08).
+
+Empfehlung (kurz)
+1. TryEnqueue mit konfigurierbarem Timeout + Drop/Backoff ( statt Infinite).
+2. Worker-Protokoll härten: BlockingCollection/Channel statt m_IsProcessing-Flag (S04).
+3. Subscribe muss alten m_Unsubscriber explizit Dispose()n (S08).
+4. OnCompleted-Drain inline entfernen (S06-alt) → Worker-basiert, aber mit sicherem "Ende"-Signal.
+5. Clear() beim Unsubscribe nur optional (Drop-Semantik dokumentieren/Warnen).
+
+Artefakte: Report erweitert in ObservableStress/REPORT.md (Vergleichs-Sektion); Dumps: /tmp/hang-S06-…dmp (alt), /tmp/hang-S04- + /tmp/hang-S09-* (neu); Runs: ObservableStress_Old/bin/Debug/net10.0/runs/ und /tmp/old_run2.log.
+
+
++++
+
+
+In der neuen Version wurden auch BinarySortedList und ThreadSafeHashSet geändert.
+Dort wurden einfach weitere Funktionen der Basisklasse überschrieben, das bedeutet: Mehr Locks => mehr potentielle Deadlocks.
+
+Ich will wissen, ob das einen Unterschied macht.
+
+Ich habe den Ordner KS.Foundation_4-26/Collections/ gegen die neuen Collections komplett ausgetauscht.
+Keine API-Änderung, Projekt sollte sich sofort kompilieren lassen.
+
+Bitte KS.Foundation_4-26 neu kompilieren und den Stresstest mit KS.Foundation_4-26 nochmal laufen lassen.
+Dann ermitteln, ob es irgendwelche Unterschiede gibt, ob die überarbeiteten Collections Verbesserungen oder Verschlechterungen bringen.
+
+***
+
+Danke. Das war die Analyse-Phase.
+Nun kommen wir zum Fixing.
+
+Ziel: Ich will die Observables/Observer
+* ohne Deadlocks
+* ohne Datenverluste
+
+Die Probleme sollten nicht durch Timouts gelöst werden.
+Klar, wir können Timeouts optional einbauen, Default sollte aber überall "infinite" sein.
+Denn ein Timeout bedeutet schlicht: Messages/Daten gehen verloren / werden verworfen.
+Das darf im Regelbetrieb nie geschehen.
+
+Frage: Konzeption:
+Von welchem Stand sollten wir für das Fixing ausgehen, vom alten oder vom neuen?
+Wenn ich das richtig verstehe, führt die neue Version einen zusätzlichen Queue ein, um nicht für jede Message einen neuen Thread starten zu müssen.
+Vorteile: Performanter
+Nachteile: Zusätzliche Deadlock-Gefahr
+
+Anmerkung:
+Die alte Version lief jahrelang stabil und machte nie Probleme. Mit der neuen Version habe ich erstmals in den laufenden Anwendungen echte Hänger erlebt, das Programm musste beendet werden. Daher diese Tests.
+
+Bitte um Deine Bewertung und Vorschläge / Strategie, dann machen wir weiter mit dem Fixing.
+
+***
+
+Wir machen mit der "neuen" (aktuellen) Version als Basis weiter (Deine Empfehlung).
+
+Grünes Licht für Änderungen in SimpleObservable.cs
+
+Falls Änderungen in anderen Klassen (z.B. den BlockingQueues) erforderlich werden, vorher fragen!
+
+Dann beginne jetzt mit dem Fixen.
+
++++
+
+Nächster Test-Topic: Das ECS in KS.Foundation.
+
+Zuerst eine grundlegende Design-Frage:
+
+public class Entity : IEntity, IComparable<IEntity>, IEquatable<Entity>
+	{
+		//static readonly object SyncLock = new object();
+
+		/***
+		// Autonumber Provider for Entity.ID
+
+		static int NextID()
+		{
+			lock (SyncLock) {
+				unchecked {
+					Interlocked.Increment (ref m_NextID);
+					return (m_NextID++);
+				}
+			}
+		}
+		***/
+
+        //readonly IDictionary<Type, IComponent> components;
+		readonly ThreadSafeDictionary<Type, IComponent> components;
+
+		static int NextID = 1;
+		internal static void ResetAutoNumber()
+		{
+			NextID = 1;
+		}
+
+		...
+
+Dann in World:
+
+	public void ClearData ()
+	{
+		Systems.ClearData ();
+		Entities.Clear ();
+		Entity.ResetAutoNumber ();
+	}
+
+
+### Theoretisches Problem
+
+Nach ClearData() beginnen neue Entities wieder mit der ID = 1.
+
+Wenn ein Consumer des ECS sich Referenzen auf Entities speichert (das sollte er eigentlich nicht tun, aber man kann es nicht ausschliessen), dann erhält er be der nächsten Auflösung unter Umständen eine völlig andere Entity zurück - aber er merkt nichts davon und es gibt keinen Fehler. Das ist gefährlich.
+
+
+SummerGUI nutzt für Widget ein ähnliches Pattern:
+
+namespace SummerGUI
+{
+	public abstract class Widget : DisposableObject, IStyleModelElement, IComparable<Widget>
+	{
+		// Autonumber Provider for Widget.ID
+		static int NextID = 1;
+		public int ID { get; private set; }
+		public override int GetHashCode ()
+		{
+			return ID;
+		}
+
+
+		protected Widget (string name, Docking dock, IWidgetStyle style)
+		{
+			unchecked {
+				ID = Interlocked.Increment (ref NextID);					
+			}
+			...
+
+### Frage: Könnte man es im ECS genauso wie in Summergui machen?
+
+unchecked Interlocked.Increment, IDs können bei überlauf negativ werden, wäre das ein Problem im ECS?
+
+Bitte mache eine tiefe Analyse, wie das ECS bisher in KS.Gantt.Ecs und SummerGUI.Gantt verwendet wird und welche Effekte eine Änderung hätte.
+
++++
+
+Nächster Test: Threadsafty des ECS-Systems testen.
+
+Real-World-Szenario:
+
+Vom Server kommen neue und geändserte Daten. Diese werden in einem Worker-Thread (später in Observern) verarbeitet.
+Dabei werden Entities hinzugefügt, Komponenten geändert, Entities gelöscht.
+Das könnte sogar parallel in mehreren Workern geschehen, denn die Daten kommen vom Server völlig asynchron und werden asynchron verarbeitet.
+
+Im GUI-Thread laufen mehrere Rendering-Systeme und greifen auf diese Daten zu.
+Die Rendering-Systeme sollten möglichst nicht oder nur extram kurz blockieren, denn in der OpenGL-Anwendung wird mit 30pder 60 FPS gerendert.
+
+Bitte erstelle wieder umfangreiche Multi-Threading Tests für das ECS mit verschiedenen Szenarien.
+
+***
+
+Ich habe KS.Foundation in meinen Workspace übernommen und PP3000 ausgeführt, läuft auf den ersten Blick problemlos.
+Danke, das sieht alles sehr gut aus. Deine Stress-Tests gefallen mir sehr.
+
+Nun möchte ich noch einen ECS-Performance Test mit 1 Mio Entities.
+Bricht die Performance irgendwo unerwartet ein?
+Gibt es Bottlenecks in der Implementierung?
+
+Hintergrund: Das ECS soll grundsätzlich auch mit sehr grossen Datenmengen wie Partikelschwärmen oder sowas geeignet sein.
+
+Bitte bewerte die ECS-Performance auch qualitativ im Vergleich 
+
+> zu herkömmlichen Project-Models.
+zu herkömmlichen Object-Models.
+
+Ist es in etwa gleich schnell, oder eher langsamer, oder sogar schneller als grosse, monilitische Models mit grossen Objektklassen mit vielen Properties?
+
++++
+
+Nur Diskussion:
+
+Schau dir zum Vergleich eines klassischen Models einmal nur als Beispiel an
+workspace/ProjectPlanner-Windows/KS.Gantt/Items/TaskItem/TaskItem.cs
+Mit komplexen Gettern und Settern, etc.
+
+Zum Zeichnen der Tasks muss immer dieses riesige TaskItem-Objekt durch den Speicher geschoben werden.
+In der ECS-Version ist die Task-Entity nur ein int. Zum Zeichnen werden aus den Komponenten nur die wenigen benötigten Werte gezogen.
+
+Jedenfalls ist die ECS-Version äusserst performant und kommt mir schneller vor als die klassische Version.
+
++++
+
+Bottlenecks (alle im Code verifiziert):
+1. Jede Struktur-Operation (Create/Add/Remove) re-evaluert die System-Mitgliedschaft für jedes System — das ist die eigentliche „ECS-Tax“ und erklärt die 5–17×-Lücke gegen die POCO-Iteration.
+2. ThreadSafeHashSet der Memberschafts-Sets = harte lock → Concurrency-Hotspot.
+3. Find<T> macht eine redundant zweite Dictionary-Probe.
+4. Per-Entity-Container + Finalizer → die 635 B/Ent.
+
+
++++
+
+Ich freue mich, dass es linear zu N wächst, d.h. keine Bottlenecks.
+
+Als Optimierungs-Idee, die sich schnell testen lässt:
+
+Wenn man das ThreadSafeDictionary für jede Entity durch ein normales Dictionary ersetzt, wo knallt es dann bei den Multithreading-Stresstests? Wo müsste man dann "von aussen" locken, damit es nicht knallt?
+
++++
+
+Nein, dann brauchen wir das nicht testen.
+
+Die guten Nachrichten für mich sind:
+* Kein Bottleneck
+* Paralleles Lesen sogar schneller!
+> Parallel (8 Reader + 1 Writer): dreht sich bei den Readern um — ECS 20.1M ops/s vs. 6.4M mit einer globalen Lock → ECS ~3.1× schneller
+
+* Die Vorteile eines ECS: Flexibilität und Erweiterbarkeit. Der Client kann für neue Funktionalitäten ganz einfach neue Komponenten einhängen und neue Systeme erstellen, das sogar zur Laufzeit, ohne ein riesiges monolithisches Datenmodell pflegen zu müssen.
+
+Hiermit beenden wir fürs erste die Tests an KS.Foundation.
+Du hast ja wesentlich mehr Robustheit geschaffen als vorher, bravo!
+
++++
+
+hermes --resume local-28857722a6eb5882339b153684bd23a63eaf036f880e234479b7f1cefcb1bfde
+

@@ -30,10 +30,6 @@ namespace KS.Foundation.ECS
 		readonly ThreadSafeDictionary<Type, IComponent> components;
 
 		static int NextID = 1;
-		internal static void ResetAutoNumber()
-		{
-			NextID = 1;
-		}
 
 		public int ID { get; private set; }
 		public override int GetHashCode ()

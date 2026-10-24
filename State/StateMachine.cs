@@ -131,7 +131,7 @@ namespace KS.Foundation
                 }
                 else					
                 {
-					this.LogDebug ("STATEMACHINE event {0}, CurrentState: {1}: UNHANDLED TRANSITION", @event);
+					this.LogDebug ("STATEMACHINE event {0}, CurrentState: {1}: UNHANDLED TRANSITION", @event, this.Name);
                     return this;        // did not change state
                 }
             }

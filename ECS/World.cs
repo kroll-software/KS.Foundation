@@ -128,7 +128,14 @@ namespace KS.Foundation.ECS
 		{
 			Systems.ClearData ();
 			Entities.Clear ();
-			Entity.ResetAutoNumber ();
+			// ★48 (24.10.2026): Keine ID-ResetAutoNumber mehr — Entity.ID läuft
+			// monoton (SummerGUI-Widget-Pattern: Interlocked.Increment, nie zurückgesetzt).
+			// Begründung: Ein Reset würde neue Entities mit ALTEN IDs belegen →
+			// ID-basierte Sets/Dicts (SystemWrapper.entities, EntityManager,
+			// GanttViewSystem-Caches) könnten eine neue Entity als „bekannt“
+			// klassifizieren (★47-Incident) oder ein Consumer mit gespeicherter
+			// Alt-ID erhält stillschweigend eine komplette andere Entity.
+			// Monotone IDs machen Aliasing strukturell unmöglich.
 		}
     }
 }

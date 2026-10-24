@@ -24,6 +24,17 @@ using Pfz.Collections;
 
 namespace KS.Foundation
 {    
+    /// <summary>
+    /// Marker: Laeuft der aktuelle Thread in einem Message-Worker (WorkerLoop von
+    /// QueuedObserver/QueuedMultiObserver)? Ruft ein Handler reentrans
+    /// InvokeSendMessage, wird die Nachricht DIREKT enqueued statt ueber Task.Run
+    /// (ThreadPool) — so entsteht kein "Thread-Flood" bei reentranten Haendlern (S10).
+    /// </summary>
+    internal static class MessageWorkerContext
+    {
+        internal static readonly ThreadLocal<bool> OnWorker = new ThreadLocal<bool> { Value = false };
+    }
+
 	public class Observable<T> : DisposableObject, IObservable<T>
 	{
 		// be tolerant accinential double subsriptions
@@ -86,15 +97,25 @@ namespace KS.Foundation
 
 		public virtual void InvokeSendMessage(T message)
 		{
-			if (!IsDisposed && !message.IsDefault()) {				
-				/***
-				Task.Factory.StartNew (() => SendMessage (message), 
-					System.Threading.CancellationToken.None, 
-					TaskCreationOptions.PreferFairness, 
-					TaskScheduler.Default);
-				***/
+			if (!IsDisposed && !message.IsDefault()) {
+			/***
+			Task.Factory.StartNew (() => SendMessage (message),
+				System.Threading.CancellationToken.None,
+				TaskCreationOptions.PreferFairness,
+				TaskScheduler.Default);
+			***/
 
-				Task.Run(() => SendMessage (message));
+				if (MessageWorkerContext.OnWorker.Value) {
+					//Schon IN einem Message-Worker (reentrante Handler-Aufrufe):
+					//  direkt enqueuen — kein neuer ThreadPool-Thread pro Nachricht
+					//  (verhindert "Thread-Flood", S10). Der Worker pickt sie
+					//  im naechsten Dequeue-Zyklus auf (keine Deadlock-Gefahr:
+					//  Enqueue auf einer int.MaxValue-Queue blockiert nie).
+					SendMessage (message);
+				}
+				else {
+					Task.Run(() => SendMessage (message));
+				}
 			}
 		}
 
@@ -258,6 +279,12 @@ namespace KS.Foundation
 		{
 			if (IsDisposed || (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed && m_Unsubscriber.Observable == observable))
 				return;
+
+			//Ummelden: die ALTE Subscription muss aufgelöst werden — sonst laeuft der
+			//  gemeinsame Observer an der alten Observable weiter (Referenz-Leck, S08).
+			if (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
+				m_Unsubscriber.Dispose ();
+
 			Unsubscriber<T> unsub = observable.Subscribe(this) as Unsubscriber<T>;
 			if (unsub != null) {
 				m_Unsubscriber = unsub;
@@ -288,15 +315,59 @@ namespace KS.Foundation
 	}
 
 
+		/// <summary>
+	/// Queue-Nachricht der QueuedObserver-Familie.
+	/// Traegt neben reinen Daten (Data) auch die Terminal-Marker Error/Completed als
+	///  Envelope — dadurch feuern Abschluss-Events strikt in FIFO-Reihenfolge (nach
+	///  allen zuvor gequeuezten Nachrichten) und es bedarf weder Polling noch
+	///  Timeouts noch Datenverwerfung (kein Drop, kein Stillstand, S04/S06 beseitigt).
+	/// </summary>
+	public class QueuedMessage<T>
+	{
+		public enum Kind { Data, Error, Completed }
+
+		public Kind MessageKind;
+		public T Value;
+		public Exception Error;
+
+		public QueuedMessage()
+		{
+		}
+
+		public QueuedMessage(Kind kind, T value, Exception error)
+		{
+			MessageKind = kind;
+			Value = value;
+			Error = error;
+		}
+	}
+
+	/// <summary>
+	/// Observer, der auf einer BlockingQueue laeuft: EIN permanenter Worker-Thread
+	///  pro Instanz (bewusst keine Thread-Arme je Message). Der Worker blockiert
+	///  wartungslos auf Dequeue(Infinite) — kein Polling (S04 beseitigt), kein
+	///  Timeout (kein Datenverlust), kein Restart-Race (Lost-Wakeup beseitigt).
+	/// OnCompleted/OnError werden als Envelope durch die Queue geschleust und feuern
+	///  genau nach dem kompletten Backlog (FIFO, S06/S09 beseitigt). OnNext koennte
+	///  auch von innen (im Worker-Thread) reentrant aufgerufen werden — dank
+	///  unbegrenzter Queue-Kapazitaet blockiert Enqueue niemals auf freie Kapazitaet
+	///  und t&ouml;tet damit keinen Self-Deadlock aus (S10 beseitigt).
+	/// </summary>
 	public class QueuedObserver<T> : DisposableObject, IObserver<T>  //, IKeyedObject
 	{
 		Unsubscriber<T> m_Unsubscriber = null;
 
 		//public string Key { get; set; }
 
+		//Unbegrenzte Kapazitaet: Ein Produzent — selbst reentrant im Worker-Thread —
+		//  blockiert niemals in Enqueue auf freie Kapazitaet; der einzige Konsument
+		//  waere sonst der gerade blockierte Worker selbst (Self-Deadlock, S09/S10).
+		//  Backpressure ist damit Aufgabe der App; die Queue wirft nie Daten weg.
+		private const int QueueCapacity = int.MaxValue;
+
 		public QueuedObserver()
 		{
-			MessageQueue = new BlockingQueue<T>();
+			MessageQueue = new BlockingQueue<QueuedMessage<T>>(QueueCapacity);
 		}
 
 		public QueuedObserver(Action<T> onNextAction, Action<Exception> onErrorAction, Action onCompletedAction)
@@ -311,128 +382,180 @@ namespace KS.Foundation
 		public Action<Exception> OnErrorAction { get; set; }
 		public Action OnCompletedAction { get; set; }
 
-		readonly BlockingQueue<T> MessageQueue;
+		readonly BlockingQueue<QueuedMessage<T>> MessageQueue;
 
-		private int m_IsProcessing = 0; // 0 = idle, 1 = Worker aktiv
+		private Thread m_Worker = null;	//EIN permanenter Worker pro Queue
+		private int m_Terminated = 0;	//0 = aktiv, 1 = Error/Completed abgearbeitet
 
 		public void OnNext(T value)
-		{		
-			if (!IsDisposed && OnNextAction != null) {
-				if (MessageQueue.Enqueue (value)) {
-					// Genau EIN Worker leert die Queue: Reihenfolge bleibt gewahrt
-					//  und es wächst keine Thread-Armee (ein Worker pro Nachricht) auf.
-					if (Interlocked.CompareExchange (ref m_IsProcessing, 1, 0) == 0) {
-						Task.Run (ProcessQueue);
-					}
-				} else {
-					this.LogWarning ("Message was not enqueued !");
-				}
-			}
-		}
-
-		private void ProcessQueue()
 		{
-			try {
-				T v;
-				while (true) {
-					// Timeout-Dequeue, damit der Worker bei Leerlauf sauber beendet
-					//  wird und sein Flag zurücksetzt (kein dauerhaft blockierter Thread).
-					if (!MessageQueue.TryDequeue (out v, 200)) {
-						if (IsDisposed || MessageQueue.Count == 0)
-							break;
-						continue;
-					}
-
-					if (IsDisposed)
-						break;
-
-					try {
-						OnNextAction (v);
-					} catch (Exception ex) {
-						ex.LogError ();
-					}
-				}
-			} finally {
-				Interlocked.Exchange (ref m_IsProcessing, 0);
-
-				// Edge-Case: Ein Element ist zwischen letztem Dequeue und Flag-Reset
-				//  eingetroffen -> Worker neu starten.
-				if (!IsDisposed && MessageQueue.Count > 0 &&
-					Interlocked.CompareExchange (ref m_IsProcessing, 1, 0) == 0) {
-					Task.Run (ProcessQueue);
-				}
+			lock (SyncObject)
+			{
+				if (IsDisposed || OnNextAction == null || Volatile.Read (ref m_Terminated) == 1)
+					return;	//Stream nach Error/Completed beendet: keine Zustellung mehr (Rx-Semantik)
+				EnsureWorker ();
+				if (!MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Data, value, null)))
+					this.LogWarning ("Message was not enqueued !");
 			}
 		}
 
 		public void OnError(Exception error)
 		{
-			if (!IsDisposed && OnErrorAction != null) {
-				OnErrorAction (error);
-				MessageQueue.Clear ();
+			lock (SyncObject)
+			{
+				if (IsDisposed || error == null || OnErrorAction == null || Volatile.Read (ref m_Terminated) == 1)
+					return;
+				EnsureWorker ();
+				//Envelope: feuert im Worker strikt NACH dem kompletten Backlog (FIFO)
+				MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Error, default (T), error));
+				Volatile.Write (ref m_Terminated, 1);
 			}
 		}
 
 		public void OnCompleted()
 		{
-			if (!IsDisposed && OnCompletedAction != null) {					
-				// OnCompletedAction feuert erst NACH den verbleibenden Nachrichten —
-				//  im bestehenden Worker-Kontext, nie parallel, nie am rufenden Thread.
-				Task.Run (() => {
-					int guard = 0;
-					while (!IsDisposed && (MessageQueue.Count > 0 || Volatile.Read (ref m_IsProcessing) == 1)) {
-						if (++guard > 30000)
-							break; // ~30s Sicherheitsbremse
-						Thread.Sleep (1);
-					}
+			lock (SyncObject)
+			{
+				if (IsDisposed || OnCompletedAction == null || Volatile.Read (ref m_Terminated) == 1)
+					return;
+				EnsureWorker ();
+				//Envelope: feuert im Worker strikt NACH dem kompletten Backlog (FIFO)
+				MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Completed, default (T), null));
+				Volatile.Write (ref m_Terminated, 1);
+			}
+		}
+
+		//SyncObject muss (reentrant) gehalten sein
+		private void EnsureWorker()
+		{
+			if (m_Worker != null && m_Worker.IsAlive)
+				return;
+			var worker = new Thread (WorkerLoop) { IsBackground = true, Name = "KS.QueuedObserver<T>-Worker" };
+			m_Worker = worker;
+			worker.Start ();
+		}
+
+		private void WorkerLoop()
+		{
+			//Marker: Dieser Thread ist ein Message-Worker (enablt den Inline-Pfad
+			//  von InvokeSendMessage beim reentranten Handler, S10).
+			MessageWorkerContext.OnWorker.Value = true;
+			while (true)
+			{
+				QueuedMessage<T> msg;
+				if (!DequeueSafe (out msg))
+					break;	//Quit (Unsubscribe/Dispose) + leere Queue => sauberes Ende
+
+				if (msg.MessageKind != QueuedMessage<T>.Kind.Data)
+				{
+					//Terminal-Marker: alles zuvor gequeuezte ist bereits zugestellt (FIFO).
+					Volatile.Write (ref m_Terminated, 1);
 					try {
-						OnCompletedAction ();
+						if (msg.MessageKind == QueuedMessage<T>.Kind.Error) {
+							if (OnErrorAction != null)
+								OnErrorAction (msg.Error);
+						} else {
+							OnCompletedAction ();
+						}
 					} catch (Exception ex) {
-						ex.LogError ();
+						ex.LogError ();	//auch ein Fehler im Abschluss-Callback darf den Worker nicht hängen lassen
 					}
-				});
+					break;	//Stream endet — der Worker verlasst die Queue
+				}
+
+				try {
+					OnNextAction (msg.Value);
+				} catch (Exception ex) {
+					//Handler-Fehler duerfen den Worker nicht toeten — sonst: verwaiste Queue
+					//  mit blockierten Sendern (S04/S08-Szenario). Worker faehrt weiter.
+					ex.LogError ();
+				}
+			}
+			MessageWorkerContext.OnWorker.Value = false;
+		}
+
+		private bool DequeueSafe(out QueuedMessage<T> msg)
+		{
+			try {
+				return MessageQueue.Dequeue (out msg);
+			} catch (Exception ex) {
+				ex.LogError ();
+				msg = null;
+				return false;	//Wird wie 'Quit+leer' behandelt: Worker endet,
+						//der nachste OnNext/Subscribe startet ihn neu (EnsureWorker) — kein Lost-Wakeup
 			}
 		}
 
 		public void Subscribe(IObservable<T> observable)
 		{
-			if (IsDisposed || (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed && m_Unsubscriber.Observable == observable))
-				return;
+			lock (SyncObject)
+			{
+				if (observable == null || IsDisposed)
+					return;
+				if (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed && m_Unsubscriber.Observable == observable)
+					return;	//bereits an genau dieser Observable abgemeldet? — dann nichts tun
 
-			Unsubscriber<T> unsub = observable.Subscribe(this) as Unsubscriber<T>;
-			if (unsub != null) {
+				//Ummelden: Die ALTE Subscription muss aufgel&ouml;st werden — sonst
+				//  bleibt der gemeinsame Observer an der alten Observable hängen
+				//  (Referenz-Leck, S08).
+				if (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
+					m_Unsubscriber.Dispose ();
+
+				Unsubscriber<T> unsub = observable.Subscribe (this) as Unsubscriber<T>;
+				if (unsub == null)
+					return;
 				m_Unsubscriber = unsub;
+
+				//Stream wieder aufnahmefertig machen (auch nach fr&uuml;herem Error/Completed):
+				Volatile.Write (ref m_Terminated, 0);
+				MessageQueue.ResetStart ();
+				EnsureWorker ();
 			}
-			MessageQueue.ResetStart ();
 		}
 
 		public void Unsubscribe(IObservable<T> observable)
 		{
-			if (!IsDisposed && m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
+			lock (SyncObject)
 			{
-				m_Unsubscriber.Dispose();
-				//m_Unsubscriber = null;
-				MessageQueue.Quit();
-				MessageQueue.Clear();
+				if (!IsDisposed && m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
+				{
+					//Zuerst Terminieren (blockiert jegliches neues Enqueue), DANN aufl&ouml;sen:
+					Volatile.Write (ref m_Terminated, 1);
+					m_Unsubscriber.Dispose ();
+					MessageQueue.Quit ();
+					MessageQueue.Clear ();
+				}
 			}
 		}
 
 		protected override void CleanupManagedResources()
 		{
-			if (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
-				m_Unsubscriber.Dispose();
-			MessageQueue.Quit ();
-			MessageQueue.Clear ();
-			base.CleanupManagedResources();
+			Thread workerRef = null;
+			lock (SyncObject)
+			{
+				if (m_Unsubscriber != null && !m_Unsubscriber.IsDisposed)
+					m_Unsubscriber.Dispose ();
+				MessageQueue.Quit ();
+				MessageQueue.Clear ();
+				Volatile.Write (ref m_Terminated, 1);
+				workerRef = m_Worker;
+				m_Worker = null;
+			}
+			base.CleanupManagedResources ();
+			//Best-Effort: Worker beenden (Quit weckt ihn, leere Queue => Ende).
+			//Nicht auf sich selbst Joinen (Reentrancy vom Worker aus: o2.Dispose()).
+			if (workerRef != null && workerRef.IsAlive && workerRef.ManagedThreadId != Thread.CurrentThread.ManagedThreadId)
+				workerRef.Join (5000);
 		}
 
 		protected override void CleanupUnmanagedResources()
 		{
-			base.CleanupUnmanagedResources();
 			m_Unsubscriber = null;
+			base.CleanupUnmanagedResources ();
 		}
 	}
 
-	public class MultiObserver<T> : DisposableObject, IObserver<T>
+public class MultiObserver<T> : DisposableObject, IObserver<T>
 	{            
 		readonly ThreadSafeDictionary<Observable<T>, Unsubscriber<T>> m_DictObservables;
 
@@ -543,181 +666,220 @@ namespace KS.Foundation
 	}
 
 
+		/// <summary>
+	/// Observer, der mehrere IObservable in EINER Queue mit EINEM permanenten Worker
+	///  zusammenfasst (bewusst keine Thread-Arme je Message). Gleiche Protokoll-
+	///  Eigenschaften wie QueuedObserver<T> (kein Polling, kein Timeout, kein Drop,
+	///  Self-Deadlock-immun, S04/S06/S09/S10 beseitigt). Completion/OnError sind
+	///  pro Observable, der Multi-Stream selbst bleibt aktiv.
+	/// </summary>
 	public class QueuedMultiObserver<T> : DisposableObject, IObserver<T>
-	{            
+	{
+		//Die Observable, ihre Subscription und der Thread: alle drei gehören zusammen!
 		readonly ThreadSafeDictionary<Observable<T>, Unsubscriber<T>> m_DictObservables;
-		readonly BlockingQueue<T> MessageQueue;
+
+		//Unbegrenzte Kapazitaet, Begr&uuml;ndung wie bei QueuedObserver<T>:
+		private const int QueueCapacity = int.MaxValue;
 
 		public QueuedMultiObserver()
 		{
 			m_DictObservables = new ThreadSafeDictionary<Observable<T>, Unsubscriber<T>>();
-			MessageQueue = new BlockingQueue<T>();
+			MessageQueue = new BlockingQueue<QueuedMessage<T>>(QueueCapacity);
 		}
 
-		public QueuedMultiObserver(Action<T> onNextAction, Action<Exception> onErrorAction, Action onCompletedAction)
+		public QueuedMultiObserver(Action<T> onNext, Action<Exception> onError, Action onCompleted)
 			: this()
 		{
-			OnNextAction = onNextAction;
-			OnErrorAction = onErrorAction;
-			OnCompletedAction = onCompletedAction;
+			OnNextAction = onNext;
+			OnErrorAction = onError;
+			OnCompletedAction = onCompleted;
 		}
 
 		public Action<T> OnNextAction { get; set; }
 		public Action<Exception> OnErrorAction { get; set; }
 		public Action OnCompletedAction { get; set; }
 
-		private int m_IsProcessing = 0; // 0 = idle, 1 = running
+		readonly BlockingQueue<QueuedMessage<T>> MessageQueue;
+
+		private Thread m_Worker = null;	//EIN permanenter Worker fuer alle subscribed Observables
 
 		public void OnNext(T value)
 		{
-			if (OnNextAction != null && !IsDisposed) {
-				MessageQueue.Enqueue(value);
-
-				// Sicherstellen, dass nur EIN Worker-Task gleichzeitig die Queue leert
-				if (Interlocked.CompareExchange(ref m_IsProcessing, 1, 0) == 0) {
-					Task.Run(ProcessQueue);
-				}
-			}
-		}
-
-		private void ProcessQueue()
-		{
-			try {
-				T v;
-				while (true) {
-					// Timeout-Dequeue: Der Worker beendet sich bei Leerlauf sauber
-					//  und setzt sein Flag zurueck (kein dauerhaft haeufiger blockierter Thread).
-					if (!MessageQueue.TryDequeue(out v, 200)) {
-						if (IsDisposed || MessageQueue.Count == 0)
-							break;
-						continue;
-					}
-					
-					if (IsDisposed) break;
-					try {
-						OnNextAction?.Invoke(v);
-					} catch (Exception ex) {
-						ex.LogError();
-					}
-				}
-			} finally {
-				// Flag zurücksetzen
-				Interlocked.Exchange(ref m_IsProcessing, 0);
-
-				// Edge-Case abfangen: Falls zwischen dem letzten Dequeue und dem Flag-Reset 
-				// ein neues Element eingetroffen ist, starten wir den Worker neu.
-				if (MessageQueue.Count > 0 && !IsDisposed) {
-					if (Interlocked.CompareExchange(ref m_IsProcessing, 1, 0) == 0) {
-						Task.Run(ProcessQueue);
-					}
-				}
-			}
-		}
-
-		public void OnCompleted()
-		{
-			if (OnCompletedAction != null && !IsDisposed) {
-				// Wenn noch ein Worker läuft, warten wir kurz im Task, 
-				// OnCompletedAction feuert erst NACH den verbleibenden Nachrichten:
-				//  warten, bis der laufende Worker fertig ist - nie parallel dazu.
-				Task.Run(() => {
-					int guard = 0;
-					while (!IsDisposed && (MessageQueue.Count > 0 || Volatile.Read(ref m_IsProcessing) == 1)) {
-						if (++guard > 30000)
-							break; // ~30s Sicherheitsbremse
-						Thread.Sleep(1);
-					}
-					try {
-						OnCompletedAction?.Invoke();
-					} catch (Exception ex) {
-						ex.LogError();
-					}
-				});
+			lock (SyncObject)
+			{
+				if (IsDisposed || OnNextAction == null)
+					return;
+				EnsureWorker ();
+				if (!MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Data, value, null)))
+					this.LogWarning ("Message was not enqueued !");
 			}
 		}
 
 		public void OnError(Exception error)
 		{
-			if (OnErrorAction != null && !IsDisposed) {
-				OnErrorAction (error);
-				MessageQueue.Clear ();
+			lock (SyncObject)
+			{
+				if (IsDisposed || error == null || OnErrorAction == null)
+					return;
+				EnsureWorker ();
+				//Envelope: feuert im Worker nach dem Backlog. Bewusst NICHT terminal
+				//  und kein Clear: andere subscribed Observables liefern weiter,
+				//  keine Daten werden verworfen.
+				MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Error, default (T), error));
+			}
+		}
+
+		public void OnCompleted()
+		{
+			lock (SyncObject)
+			{
+				if (IsDisposed || OnCompletedAction == null)
+					return;
+				EnsureWorker ();
+				//Envelope: feuert im Worker nach dem Backlog; der Multi-Stream bleibt aktiv.
+				MessageQueue.Enqueue (new QueuedMessage<T> (QueuedMessage<T>.Kind.Completed, default (T), null));
+			}
+		}
+
+		//SyncObject muss (reentrant) gehalten sein
+		private void EnsureWorker()
+		{
+			if (m_Worker != null && m_Worker.IsAlive)
+				return;
+			var worker = new Thread (WorkerLoop) { IsBackground = true, Name = "KS.QueuedMultiObserver<T>-Worker" };
+			m_Worker = worker;
+			worker.Start ();
+		}
+
+		private void WorkerLoop()
+		{
+			//Marker: Dieser Thread ist ein Message-Worker (enablt den Inline-Pfad
+			//  von InvokeSendMessage beim reentranten Handler, S10).
+			MessageWorkerContext.OnWorker.Value = true;
+			while (true)
+			{
+				QueuedMessage<T> msg;
+				if (!DequeueSafe (out msg))
+					break;	//Quit (Unsubscribe/UnsubscribeAll/Dispose) + leer => Ende
+
+				try {
+					if (msg.MessageKind == QueuedMessage<T>.Kind.Data)
+					{
+						OnNextAction (msg.Value);
+					}
+					else if (msg.MessageKind == QueuedMessage<T>.Kind.Error)
+					{
+						if (OnErrorAction != null)
+							OnErrorAction (msg.Error);
+						//kein break: Multi-Stream bleibt aktiv
+					}
+					else
+					{
+						if (OnCompletedAction != null)
+							OnCompletedAction ();
+						//kein break: Multi-Stream bleibt aktiv
+					}
+				} catch (Exception ex) {
+					ex.LogError ();	//Handler-Fehler toeten den Worker nicht
+				}
+			}
+			MessageWorkerContext.OnWorker.Value = false;
+		}
+
+		private bool DequeueSafe(out QueuedMessage<T> msg)
+		{
+			try {
+				return MessageQueue.Dequeue (out msg);
+			} catch (Exception ex) {
+				ex.LogError ();
+				msg = null;
+				return false;	//Wie 'Quit+leer': Worker endet, naechster Subscribe
+						//startet ihn neu (EnsureWorker) — kein Lost-Wakeup
 			}
 		}
 
 		public void Subscribe(Observable<T> observable)
-		{						
-			if (observable == null || observable.IsDisposed || this.IsDisposed)
-				return;
-			if (m_DictObservables.Count == 0)
-				MessageQueue.ResetStart();
-			Unsubscriber<T> unsub = observable.Subscribe(this) as Unsubscriber<T>;
-			if (unsub != null)
-				m_DictObservables.TryAdd(observable, unsub);				
+		{
+			lock (SyncObject)
+			{
+				if (observable == null || IsDisposed)
+					return;
+				bool first = m_DictObservables.Count == 0;
+				Unsubscriber<T> unsub = observable.Subscribe (this) as Unsubscriber<T>;
+				if (unsub == null)
+					return;
+				m_DictObservables.TryAdd (observable, unsub);
+				if (first)
+					//Erste Subscription (oder Wiederaufnahme nach Unsubscribe/All):
+					MessageQueue.ResetStart ();
+				//no-op, falls der Worker noch l&auml;uft
+				EnsureWorker ();
+			}
 		}
 
+		/// <summary>Unsubscribes a subscriber from an <see cref="IObservable{T}"/> object.</summary>
 		public void Unsubscribe(Observable<T> observable)
 		{
 			lock (SyncObject)
 			{
-				if (observable == null)
-					return;
-				try
-				{                        
+				if (observable != null && m_DictObservables.ContainsKey(observable))
+				{
 					Unsubscriber<T> target = null;
 					if (m_DictObservables.TryGetValue(observable, out target))
 					{
 						m_DictObservables.Remove(observable);
-						if (target != null)
-							target.Dispose();
+						if (target != null && !target.IsDisposed)
+							target.Dispose ();
 					}
-					if (m_DictObservables.Count == 0) {
+
+					if (m_DictObservables.Count == 0)
+					{
 						MessageQueue.Quit();
 						MessageQueue.Clear();
 					}
 				}
-				catch (Exception e)
-				{
-					e.LogError();
-				}
 			}
 		}
 
+		/// <summary>Unsubscribes a subscriber from all <see cref="IObservable{T}"/> objects.</summary>
 		public void UnsubscribeAll()
 		{
 			lock (SyncObject)
 			{
-				try
-				{                        
-					m_DictObservables.Values.OfType<Unsubscriber<T>>().ForEach(o => o.Dispose());
-					m_DictObservables.Clear();
+				if (m_DictObservables.Count > 0)
+				{
+					foreach (var unsub in m_DictObservables)
+						unsub.Value.Dispose();
+					m_DictObservables.Clear ();
 					MessageQueue.Quit();
 					MessageQueue.Clear();
 				}
-				catch (Exception e)
-				{
-					e.LogError();
-				}                    
 			}
-		}            
+		}
 
 		protected override void CleanupManagedResources()
 		{
-			try
+			Thread workerRef = null;
+			lock (SyncObject)
 			{
-				if (m_DictObservables != null && m_DictObservables.Count > 0)
-				{
-					m_DictObservables.Values.DisposeListObjects();                        
-				}
-				//    m_DictObservables.Values.OfType<Observable<T>.Unsubscriber>().Where(o => !o.IsDisposed).ForEach(o => o.Dispose());
+				foreach (var item in m_DictObservables)
+					if (item.Value != null && !item.Value.IsDisposed)
+						item.Value.Dispose ();
 				MessageQueue.Quit();
 				MessageQueue.Clear();
+				workerRef = m_Worker;
+				m_Worker = null;
 			}
-			catch (Exception e)
-			{
-				e.LogError();
-			}                
+			base.CleanupManagedResources ();
+			//Best-Effort: Worker beenden; nicht auf sich selbst Joinen (Reentrancy).
+			if (workerRef != null && workerRef.IsAlive && workerRef.ManagedThreadId != Thread.CurrentThread.ManagedThreadId)
+				workerRef.Join (5000);
+		}
 
-			base.CleanupManagedResources();
+		protected override void CleanupUnmanagedResources()
+		{
+			m_DictObservables.Clear ();
+			base.CleanupUnmanagedResources ();
 		}
 	}
 }
