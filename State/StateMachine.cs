@@ -42,7 +42,7 @@ namespace KS.Foundation
         /// <summary>
         /// An event has happened, transition to next state
         /// </summary>
-        public void EventHappens(Event @event, object args = null)
+        public virtual void EventHappens(Event @event, object args = null)
         {
             //System.Diagnostics.Debug.WriteLine(@event, "StateMachine: EventHappens");
             //System.Diagnostics.Debug.WriteLine(args, "StateMachine: args");
@@ -142,6 +142,78 @@ namespace KS.Foundation
             }
         }
     }
+
+    [DebuggerDisplay("Current State = {CurrentState.Name}")]
+    public abstract class ObservableStateMachine<T> : StateMachine<T>, IObservable<ObservableStateMachine<T>.StateMachineMessage> where T : ObservableStateMachine<T>
+    {        
+        public struct StateMachineMessage
+        {
+            //public readonly ObservableStateMachine<T> Sender;
+            public readonly string Subject;            
+            public readonly DateTime Timestamp;
+            public readonly State CurrentState;
+            public readonly State PreviousState;
+
+            public StateMachineMessage(string subject, State previousState, State currentState)
+            {
+                Timestamp = DateTime.UtcNow;
+                Subject = subject;
+                PreviousState = previousState;
+                CurrentState = currentState;                
+            }
+        }
+
+
+        private Lazy<Observable<StateMachineMessage>> m_Observable;
+        //public Observable<StateMachineMessage> Observable
+        //{
+        //    get
+        //    {
+        //        return m_Observable.Value;
+        //    }
+        //}
+
+        public IDisposable Subscribe(IObserver<StateMachineMessage> observer)
+        {
+            return m_Observable.Value.Subscribe(observer);            
+        }
+
+        public void Unsubscribe(IObserver<StateMachineMessage> observer)
+        {
+            m_Observable.Value.Unsubscribe(observer);
+        }
+
+        public ObservableStateMachine(State initial)
+            :base(initial)
+        {            
+            m_Observable = new Lazy<Observable<StateMachineMessage>>(true);
+        }
+
+        ~ObservableStateMachine()
+        {
+            if (m_Observable.IsValueCreated)
+                m_Observable.Value.Dispose();            
+        }
+
+        public virtual void OnStatusChanged()
+        {
+            if (m_Observable.IsValueCreated)
+            {
+                m_Observable.Value.Do(obs =>
+                {
+                    if (obs.ObserverCount > 0)
+                        obs.SendMessage(new StateMachineMessage(null, PreviousState, CurrentState));
+                });
+            }
+        }
+
+        public override void EventHappens(Event @event, object args = null)
+        {
+            base.EventHappens(@event, args);
+            if (PreviousState != CurrentState)
+                OnStatusChanged();
+        }
+    }    
 }
 
 
